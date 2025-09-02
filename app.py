@@ -21,7 +21,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🧾 Trabaho por avaliador - SICT / SPG")
+st.title("🧾 Trabalho por avaliador - SICT / SPG")
 #st.markdown(
 #    """
 #    **Como usar**
