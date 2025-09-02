@@ -347,7 +347,7 @@ if not all_evals:
 # =====================================
 # UI principal
 # =====================================
-st.subheader(f"🎯 Selecione um Avaliador(a) — Aba: **{sheet_name}**")
+st.subheader(f"🎯 Selecione um Avaliador(a): **{sheet_name}**")
 c1, c2, c3 = st.columns([2, 1, 1])
 with c1:
     selected_eval = st.selectbox("Avaliador(a)", options=[""] + all_evals, index=0)
@@ -400,7 +400,7 @@ st.divider()
 # =====================================
 # Lote: todos os QRs
 # =====================================
-st.subheader("📦 Gerar QRs de **todos** os avaliadores (ZIP)")
+st.subheader("📦 Gerar QRs de **todos** os avaliadores?")
 cz1, cz2, cz3 = st.columns([1,1,1])
 with cz1:
     do_zip = st.checkbox("Preparar .zip com todos os QRs")
