@@ -1,0 +1,7 @@
+streamlit
+python-docx
+pandas
+unidecode
+qrcode[pil]
+Pillow
+
