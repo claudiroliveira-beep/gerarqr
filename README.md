@@ -1,0 +1,2 @@
+# gerarqr
+Jornada
