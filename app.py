@@ -1,12 +1,6 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Sep  2 13:44:52 2025
-
-@author: dpeuser
-"""
-
+# app.py
 import io
+import re
 import json
 import zipfile
 from pathlib import Path
@@ -18,9 +12,9 @@ from unidecode import unidecode
 import qrcode
 from PIL import Image
 
-# ==============================
+# =====================================
 # Configuração básica da página
-# ==============================
+# =====================================
 st.set_page_config(
     page_title="QR dos Avaliadores - SICT/SPG",
     page_icon="🧾",
@@ -31,40 +25,47 @@ st.title("🧾 Geração de QR Codes por Avaliador (SICT / SPG)")
 st.markdown(
     """
     **Como usar**
-    1) Envie o arquivo **.docx** do cronograma (o mesmo que você anexou aqui).  
-    2) O app extrai os trabalhos e mostra a lista de avaliadores.  
-    3) Selecione o avaliador e gere o **QR** com todas as suas atribuições.  
+    1) Envie o arquivo **.docx** do cronograma (o mesmo que você tem).  
+    2) O app extrai os trabalhos e lista os avaliadores encontrados.  
+    3) Selecione um avaliador para visualizar suas atribuições e gerar o **QR**.  
     4) (Opcional) Gere **QRs de todos os avaliadores** em lote e baixe um **.zip**.
 
     > Dica: se preferir, coloque o arquivo no repositório com o nome `cronograma.docx`. O app tentará carregá-lo automaticamente.
     """
 )
 
-# ==============================
-# Utilitários
-# ==============================
+# =====================================
+# Utilitários e configuração
+# =====================================
+NBSP = "\xa0"
+
 EXPECTED_COLS = {
     "aluno": ["aluno", "aluno(a)", "aluna(o)"],
     "orientador": ["orientador", "orientador(a)"],
-    "areas": ["áreas", "areas", "area"],
+    "areas": ["áreas", "areas", "area", "área"],
     "titulo": ["título", "titulo"],
     "avaliador1": ["avaliador 1", "avaliador1", "avaliador(a) 1"],
     "avaliador2": ["avaliador 2", "avaliador2", "avaliador(a) 2"],
     "painel": ["nº do painel", "no do painel", "n do painel", "painel", "nº painel", "nº de painel"],
-    "subevento": ["subevento", "evento"],
+    "subevento": ["subevento", "evento", "sub-evento", "evento/subevento"],
     "dia": ["dia"],
     "hora": ["hora"]
 }
 
-def normalize(s: str) -> str:
+def clean_cell(s: str) -> str:
+    """Limpa espaços NBSP, quebras e múltiplos espaços."""
     if s is None:
         return ""
-    s = str(s).strip()
-    return s
+    s = str(s).replace(NBSP, " ")
+    s = re.sub(r"[\r\n\t]+", " ", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip()
+
+def normalize(s: str) -> str:
+    return clean_cell(s)
 
 def col_key(name: str) -> str:
-    """Normaliza nome de coluna para comparação flexível."""
-    return unidecode(name.lower().strip())
+    return unidecode(clean_cell(name).lower())
 
 def find_column(target_keys, columns):
     """Encontra a coluna cujo nome corresponde (aproximadamente) à lista de possíveis nomes."""
@@ -73,7 +74,7 @@ def find_column(target_keys, columns):
         k = col_key(t)
         if k in colmap:
             return colmap[k]
-    # fallback: tentativa por "starts with"
+    # fallback: aproximação por prefixo
     for c in columns:
         if any(col_key(c).startswith(col_key(t)) for t in target_keys):
             return c
@@ -85,31 +86,25 @@ def read_docx_tables_to_df(file_like) -> pd.DataFrame:
     frames = []
 
     for tbl in doc.tables:
-        # extrai matriz
-        rows = []
+        matrix = []
         for r in tbl.rows:
-            rows.append([normalize(c.text) for c in r.cells])
-
-        if not rows:
+            matrix.append([normalize(c.text) for c in r.cells])
+        if not matrix:
             continue
 
-        # tenta usar a primeira linha como cabeçalho
-        header = [normalize(h) for h in rows[0]]
-        data = rows[1:]
-
-        # evita tabelas "ruins" sem dados
-        if len(header) < 3 or len(data) == 0:
+        header = [normalize(h) for h in matrix[0]]
+        data = matrix[1:]
+        if len(header) < 3 or not data:
             continue
 
         df = pd.DataFrame(data, columns=header)
 
-        # mantém apenas tabelas que têm um subconjunto relevante
+        # pontua se é uma tabela "relevante"
         header_keys = [col_key(c) for c in header]
         score = sum(
             any(col_key(opt) in header_keys for opt in opts)
             for opts in EXPECTED_COLS.values()
         )
-        # limiar: tem pelo menos 5 colunas mapeáveis
         if score >= 5:
             frames.append(df)
 
@@ -118,42 +113,71 @@ def read_docx_tables_to_df(file_like) -> pd.DataFrame:
 
     big = pd.concat(frames, ignore_index=True)
 
-    # Mapear nomes de colunas para padrão interno
+    # mapeia nomes flexíveis -> padrão interno
     mapped = {}
     for std_name, options in EXPECTED_COLS.items():
         col = find_column(options, list(big.columns))
         if col:
             mapped[std_name] = col
 
-    # Seleciona apenas colunas encontradas
     big = big.rename(columns={v: k for k, v in mapped.items()})
-    return big[list(mapped.keys())].copy()
+
+    # garante presença das chaves esperadas (mesmo que vazias)
+    for k in EXPECTED_COLS.keys():
+        if k not in big.columns:
+            big[k] = ""
+
+    # limpeza básica de todas as colunas como string
+    for c in big.columns:
+        big[c] = big[c].astype(str).map(clean_cell)
+
+    return big[list(EXPECTED_COLS.keys())].copy()
 
 def tidy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Limpezas e padronizações leves."""
+    """Limpa/normaliza dados, preenche células mescladas (forward fill) e padroniza subevento."""
     if df.empty:
         return df
 
-    # Padroniza números de painel
+    # Converte vazios para NaN e faz forward-fill em campos "hierárquicos"
+    ffill_cols = ["subevento", "areas", "dia", "hora"]
+    for c in ffill_cols:
+        if c in df.columns:
+            df[c] = df[c].replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
+    df[ffill_cols] = df[ffill_cols].ffill()
+
+    # Normalizações pontuais
     if "painel" in df.columns:
-        df["painel"] = df["painel"].astype(str).str.strip()
+        df["painel"] = (
+            df["painel"]
+            .astype(str)
+            .str.replace(r"[^\dA-Za-z\-/. ]+", "", regex=True)
+            .str.strip()
+        )
 
-    # Padroniza subevento (SICT/SPG)
+    # Normaliza Subevento (captura “XIV SICT”, “XII SPG” etc.)
     if "subevento" in df.columns:
-        df["subevento"] = df["subevento"].str.upper().str.strip()
+        def norm_event(x: str) -> str:
+            s = x.upper().strip()
+            s = re.sub(r"\s+", " ", s)
+            m = re.search(r"\b([IVXLCDM]+)\s+(SICT|SPG)\b", s)
+            if m:
+                return f"{m.group(1)} {m.group(2)}"
+            # fallback: só a sigla, se existir
+            if "SICT" in s:
+                return "SICT" if not re.search(r"\bSICT\b", s) else s
+            if "SPG" in s:
+                return "SPG" if not re.search(r"\bSPG\b", s) else s
+            return s
+        df["subevento"] = df["subevento"].map(norm_event)
 
-    # Remove linhas totalmente vazias
-    df = df.dropna(how="all")
-    # Remove duplicatas exatas
-    df = df.drop_duplicates()
-
-    # Ajusta títulos muito longos (apenas para exibição)
+    # Ajusta títulos (exibição)
     if "titulo" in df.columns:
         df["titulo"] = df["titulo"].str.replace("\n", " ").str.strip()
 
-    # Garante strings
+    # Garante string final e remove duplicatas
     for c in df.columns:
-        df[c] = df[c].astype(str).fillna("").str.strip()
+        df[c] = df[c].astype(str).map(clean_cell)
+    df = df.drop_duplicates()
 
     return df
 
@@ -210,22 +234,43 @@ def make_qr_image(payload_text: str, box_size: int = 10, border: int = 4) -> Ima
 def df_for_evaluator(name: str, eval_map: dict) -> pd.DataFrame:
     rows = eval_map.get(name, [])
     if not rows:
-        return pd.DataFrame(columns=["Aluno(a)", "Título", "Nº do Painel", "Áreas", "Subevento", "Dia", "Hora"])
+        return pd.DataFrame(columns=["Aluno(a)", "Título", "Nº do Painel", "Área", "Subevento", "Dia", "Hora"])
     return pd.DataFrame([
         {
             "Aluno(a)": r["aluno"],
             "Título": r["titulo"],
             "Nº do Painel": r["painel"],
-            "Áreas": r["area"],
+            "Área": r["area"],
             "Subevento": r["subevento"],
             "Dia": r["dia"],
             "Hora": r["hora"]
         } for r in rows
     ])
 
-# ==============================
+def badge_evento(subs: list[str]) -> str:
+    """Gera badges em HTML simples para Subevento(s)."""
+    if not subs:
+        return ""
+    pills = []
+    for s in subs:
+        color = "#2563EB" if "SICT" in s.upper() else "#047857" if "SPG" in s.upper() else "#374151"
+        pills.append(
+            f"""<span style="
+                display:inline-block;
+                padding:4px 10px;
+                margin:0 6px 6px 0;
+                border-radius:9999px;
+                background:{color};
+                color:white;
+                font-size:12px;
+                font-weight:600;
+                ">{s}</span>"""
+        )
+    return "<div>" + "".join(pills) + "</div>"
+
+# =====================================
 # Entrada do arquivo
-# ==============================
+# =====================================
 st.sidebar.header("📄 Arquivo do Cronograma")
 uploaded = st.sidebar.file_uploader("Envie o arquivo .docx (cronograma)", type=["docx"])
 
@@ -254,9 +299,9 @@ if not all_evals:
     st.warning("Nenhum avaliador encontrado nas colunas 'AVALIADOR 1'/'AVALIADOR 2'.")
     st.stop()
 
-# ==============================
+# =====================================
 # UI principal
-# ==============================
+# =====================================
 st.subheader("🎯 Selecione um Avaliador(a) para gerar o QR")
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -267,6 +312,13 @@ with col2:
 if selected_eval:
     df_show = df_for_evaluator(selected_eval, eval_map)
     st.markdown(f"**Atribuições de:** {selected_eval}")
+
+    # Badge(s) de subevento
+    subevents = sorted({s for s in df_show["Subevento"].unique().tolist() if s})
+    if subevents:
+        st.markdown("**Subevento(s):**", help="Detectado a partir da coluna 'Subevento' do documento.")
+        st.markdown(badge_evento(subevents), unsafe_allow_html=True)
+
     st.dataframe(df_show, use_container_width=True)
 
     # Monta o payload do QR como JSON legível
@@ -292,11 +344,21 @@ if selected_eval:
         mime="image/png"
     )
 
+    # Extra: exportar CSV das atribuições do avaliador
+    csv_buf = io.StringIO()
+    df_show.to_csv(csv_buf, index=False)
+    st.download_button(
+        label="⬇️ Baixar atribuições (CSV)",
+        data=csv_buf.getvalue().encode("utf-8"),
+        file_name=f"atribuicoes_{unidecode(selected_eval).replace(' ', '_')}.csv",
+        mime="text/csv"
+    )
+
 st.divider()
 
-# ==============================
+# =====================================
 # Lote: gerar todos os QRs
-# ==============================
+# =====================================
 st.subheader("📦 Gerar QRs de **todos** os avaliadores (ZIP)")
 colz1, colz2 = st.columns([1, 1])
 with colz1:
