@@ -16,12 +16,12 @@ from PIL import Image
 # Configuração da página
 # =====================================
 st.set_page_config(
-    page_title="QR dos Avaliadores - SICT/SPG (Excel)",
+    page_title="Avaliadores - SICT/SPG",
     page_icon="🧾",
     layout="wide"
 )
 
-st.title("🧾 Geração de QR Codes por Avaliador (a partir de Excel) — SICT / SPG")
+st.title("🧾 Trabaho por avaliador - SICT / SPG")
 st.markdown(
     """
     **Como usar**
