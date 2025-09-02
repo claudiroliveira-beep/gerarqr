@@ -182,18 +182,82 @@ def build_mapping_by_evaluator(df: pd.DataFrame) -> dict:
 
     return eval_map
 
-def make_qr_image(payload_text: str, box_size: int = 6, border: int = 2) -> Image.Image:
-    """Gera QR menor por padrão (box_size=6, border=2)."""
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_Q,
-        box_size=box_size,
-        border=border
+def make_qr_image(
+    payload_obj,
+    box_size: int = 6,
+    border: int = 2,
+    prefer_q=True,
+    mini=False
+) -> Image.Image:
+    """
+    Gera QR com fallback:
+    - Compacta JSON (sem espaços)
+    - Tenta ERROR_CORRECT_Q, depois M, depois L
+    - Se ainda falhar, remove 'titulo' de cada trabalho (mini=True) e tenta de novo
+    """
+    # 1) compacta JSON (menor)
+    def to_text(obj):
+        return json.dumps(obj, ensure_ascii=False, separators=(',', ':'))
+
+    def try_build(txt, err_level):
+        qr = qrcode.QRCode(
+            version=1,  # começa pequeno; fit=True aumenta se necessário
+            error_correction=err_level,
+            box_size=box_size,
+            border=border
+        )
+        qr.add_data(txt)
+        qr.make(fit=True)
+        return qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    # monta payload base
+    payload = payload_obj
+
+    # se mini, remova títulos para encurtar
+    if mini and isinstance(payload, dict) and "trabalhos" in payload:
+        slim = []
+        for r in payload["trabalhos"]:
+            slim.append({
+                "aluno": r.get("aluno", ""),
+                "area": r.get("area", ""),
+                "painel": r.get("painel", ""),
+                "subevento": r.get("subevento", ""),
+                "dia": r.get("dia", ""),
+                "hora": r.get("hora", "")
+            })
+        payload = {**payload, "trabalhos": slim}
+
+    txt = to_text(payload)
+
+    # Ordem de tentativas de correção
+    levels = [
+        qrcode.constants.ERROR_CORRECT_Q,
+        qrcode.constants.ERROR_CORRECT_M,
+        qrcode.constants.ERROR_CORRECT_L,
+    ]
+    if not prefer_q:
+        levels = [
+            qrcode.constants.ERROR_CORRECT_M,
+            qrcode.constants.ERROR_CORRECT_L,
+            qrcode.constants.ERROR_CORRECT_Q,
+        ]
+
+    # Tenta com o payload atual
+    last_err = None
+    for lvl in levels:
+        try:
+            return try_build(txt, lvl)
+        except Exception as e:
+            last_err = e
+
+    # Fallback: ativa modo "mini" (sem títulos) e tenta de novo
+    if not mini:
+        return make_qr_image(payload_obj, box_size=box_size, border=border, prefer_q=False, mini=True)
+
+    # Se ainda falhar, propaga um erro claro
+    raise RuntimeError(
+        f"QR muito grande mesmo no modo compacto. Tente reduzir conteúdos ou gerar QRs separados. Erro: {last_err}"
     )
-    qr.add_data(payload_text)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    return img
 
 def df_for_evaluator(name: str, eval_map: dict) -> pd.DataFrame:
     rows = eval_map.get(name, [])
@@ -308,9 +372,8 @@ if selected_eval:
         "quantidade_trabalhos": len(eval_map[selected_eval]),
         "trabalhos": eval_map[selected_eval]
     }
-    payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
 
-    img = make_qr_image(payload_text, box_size=int(box), border=int(border))
+    img = make_qr_image(payload, box_size=int(box), border=int(border))
     st.image(img, caption=f"QR do Avaliador(a): {selected_eval}")
 
     buf = io.BytesIO()
