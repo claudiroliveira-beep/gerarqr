@@ -22,17 +22,17 @@ st.set_page_config(
 )
 
 st.title("🧾 Trabaho por avaliador - SICT / SPG")
-st.markdown(
-    """
-    **Como usar**
-    1) Envie a planilha **.xlsx** com as abas (`GERAL`, `SICT` e/ou `SPG`).  
-    2) Selecione a **aba** e confira os avaliadores detectados.  
-    3) Escolha um avaliador para ver suas atribuições e **gerar o QR menor**.  
-    4) (Opcional) Gere **todos os QRs** em lote (.zip).
-
-    > Dica: sem upload, o app tenta carregar `cronograma.xlsx` ou `cronograma_SICT_SPG.xlsx` da raiz do repositório.
-    """
-)
+#st.markdown(
+#    """
+#    **Como usar**
+#    1) Envie a planilha **.xlsx** com as abas (`GERAL`, `SICT` e/ou `SPG`).  
+#    2) Selecione a **aba** e confira os avaliadores detectados.  
+#    3) Escolha um avaliador para ver suas atribuições e **gerar o QR menor**.  
+#    4) (Opcional) Gere **todos os QRs** em lote (.zip).
+#
+#    > Dica: sem upload, o app tenta carregar `cronograma.xlsx` ou `cronograma_SICT_SPG.xlsx` da raiz do repositório.
+#    """
+#)
 
 # =====================================
 # Utilitários
