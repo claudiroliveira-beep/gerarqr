@@ -210,13 +210,13 @@ def make_qr_image(payload_text: str, box_size: int = 10, border: int = 4) -> Ima
 def df_for_evaluator(name: str, eval_map: dict) -> pd.DataFrame:
     rows = eval_map.get(name, [])
     if not rows:
-        return pd.DataFrame(columns=["Aluno(a)", "Título", "Nº do Painel", "Área", "Subevento", "Dia", "Hora"])
+        return pd.DataFrame(columns=["Aluno(a)", "Título", "Nº do Painel", "Áreas", "Subevento", "Dia", "Hora"])
     return pd.DataFrame([
         {
             "Aluno(a)": r["aluno"],
             "Título": r["titulo"],
             "Nº do Painel": r["painel"],
-            "Área": r["area"],
+            "Áreas": r["area"],
             "Subevento": r["subevento"],
             "Dia": r["dia"],
             "Hora": r["hora"]
