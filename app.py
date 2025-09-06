@@ -359,8 +359,9 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
 
                     # PREPARA bytes para download e guarda na sessão
                     buf_x = io.BytesIO()
-                    with pd.ExcelWriter(buf_x, engine="openpyxl") as writer:
+                    with pd.ExcelWriter(buf_x, engine="xlsxwriter") as writer:
                         df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
+                    buf_x.seek(0)
                     st.session_state["avaliacoes_xlsx_bytes"] = buf_x.getvalue()
                 
                     # Sinaliza que temos novo arquivo disponível para download
