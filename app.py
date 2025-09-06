@@ -324,7 +324,17 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                 g4 = st.slider("4) Relevância / Originalidade", 1, 5, 3)
                 g5 = st.slider("5) Apresentação / Defesa", 1, 5, 3)
                 obs = st.text_area("Observações (opcional)", "")
-
+                
+                # Renderiza o botão de download FORA do form
+                if st.session_state.get("avaliacoes_ready") and st.session_state.get("avaliacoes_xlsx_bytes"):
+                    st.download_button(
+                        "⬇️ Baixar avaliações (Excel)",
+                        data=st.session_state["avaliacoes_xlsx_bytes"],
+                        file_name="avaliacoes.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_avaliacoes_outside_form"
+                    )
+                    
                 submitted = st.form_submit_button("Salvar avaliação")
                 if submitted:
                     # monta registro para salvar
@@ -345,7 +355,17 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                         "Apresentacao_defesa": g5,
                         "Observacoes": obs
                     }
+                    st.success("✅ Avaliação salva em 'avaliacoes.xlsx' (aba 'Respostas').")
 
+                    # PREPARA bytes para download e guarda na sessão
+                    buf_x = io.BytesIO()
+                    with pd.ExcelWriter(buf_x, engine="openpyxl") as writer:
+                        df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
+                    st.session_state["avaliacoes_xlsx_bytes"] = buf_x.getvalue()
+                
+                    # Sinaliza que temos novo arquivo disponível para download
+                    st.session_state["avaliacoes_ready"] = True
+                    
                     # salva (append) em avaliacoes.xlsx
                     if EVAL_FILE.exists():
                         try:
@@ -364,6 +384,6 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                     buf_x = io.BytesIO()
                     with pd.ExcelWriter(buf_x, engine="openpyxl") as writer:
                         df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
-                    st.download_button("⬇️ Baixar avaliações (Excel)", buf_x.getvalue(), "avaliacoes.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    #st.download_button("⬇️ Baixar avaliações (Excel)", buf_x.getvalue(), "avaliacoes.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.error("Avaliador não encontrado nos dados atuais.")
