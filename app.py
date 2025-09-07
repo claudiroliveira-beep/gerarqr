@@ -1,10 +1,14 @@
-# app.py — SICT/SPG: QRs por avaliador + Formulário interno com salvamento em Excel
+# app.py — SICT/SPG: QRs por avaliador + Formulário interno + SQLite + Área do Operador
 
 import io
 import re
 import json
 import zipfile
 import unicodedata
+import sqlite3
+import gzip
+import base64
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode, quote_plus
 
@@ -23,8 +27,8 @@ st.title("🧾 SICT / SPG — Avaliações e QRs (Excel)")
 # Constantes
 # =========================
 NBSP = "\xa0"
-EVAL_FILE = Path("avaliacoes.xlsx")      # arquivo permanente com as respostas
-EVAL_SHEET = "Respostas"                 # aba do arquivo de respostas
+EVAL_DB = Path("avaliacoes.db")      # banco SQLite
+DB_TABLE = "respostas"
 
 EXPECTED_COLS = {
     "Aluno(a)": ["aluno", "aluno(a)", "aluna(o)"],
@@ -63,7 +67,6 @@ def find_column(target_keys, columns):
         k = col_key(t)
         if k in colmap:
             return colmap[k]
-    # aproximação por prefixo
     for c in columns:
         if any(col_key(c).startswith(col_key(t)) for t in target_keys):
             return c
@@ -92,7 +95,7 @@ def ensure_expected_columns(df: pd.DataFrame) -> pd.DataFrame:
 def tidy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    # Forward-fill de campos hierárquicos (efeito de células mescladas do Word)
+    # Forward-fill de campos hierárquicos
     ffill_cols = ["Subevento", "Áreas", "Dia", "Hora"]
     for c in ffill_cols:
         df[c] = df[c].replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
@@ -100,10 +103,7 @@ def tidy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     # Painel sem ruído
     df["Nº do Painel"] = (
-        df["Nº do Painel"]
-        .astype(str)
-        .str.replace(r"[^\dA-Za-z\-/. ]+", "", regex=True)
-        .str.strip()
+        df["Nº do Painel"].astype(str).str.replace(r"[^\dA-Za-z\-/. ]+", "", regex=True).str.strip()
     )
 
     # Normaliza Subevento (e.g., "XIV SICT", "XII SPG")
@@ -148,31 +148,153 @@ def build_mapping_by_evaluator(df: pd.DataFrame) -> dict:
         push(row.get("AVALIADOR 2", ""), row)
     for k in eval_map:
         eval_map[k] = sorted(
-            eval_map[k],
-            key=lambda r: (r["subevento"], r["dia"], r["hora"], r["painel"])
+            eval_map[k], key=lambda r: (r["subevento"], r["dia"], r["hora"], r["painel"])
         )
     return eval_map
 
-# QR robusto e compacto
-def make_qr_image(payload_obj, box_size=6, border=2, mini=False):
-    """Gera QR com JSON compacto e fallback para 'mini' (sem títulos) se necessário."""
-    def to_text(obj):
-        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-    def try_build(txt, err_level):
-        qr = qrcode.QRCode(
-            version=None,
-            error_correction=err_level,
-            box_size=box_size,
-            border=border
-        )
-        qr.add_data(txt)
+# =========================
+# SQLite: init / save / load
+# =========================
+def init_db():
+    """Cria a tabela se não existir + trava de duplicidade."""
+    with sqlite3.connect(EVAL_DB) as conn:
+        c = conn.cursor()
+        c.execute(f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                sheet TEXT,
+                avaliador TEXT,
+                aluno TEXT,
+                orientador TEXT,
+                titulo TEXT,
+                painel TEXT,
+                subevento TEXT,
+                dia TEXT,
+                hora TEXT,
+                clareza_objetivos INTEGER,
+                metodologia INTEGER,
+                qualidade_resultados INTEGER,
+                relevancia_originalidade INTEGER,
+                apresentacao_defesa INTEGER,
+                observacoes TEXT,
+                UNIQUE (sheet, avaliador, painel, dia, hora)
+            );
+        """)
+        conn.commit()
+
+def save_evaluation_sqlite(record: dict) -> tuple[bool, str]:
+    """Salva a avaliação no SQLite. Retorna (ok, msg)."""
+    payload = (
+        datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        record.get("Sheet", ""),
+        record.get("Avaliador", ""),
+        record.get("Aluno(a)", ""),
+        record.get("Orientador(a)", ""),
+        record.get("Título", ""),
+        record.get("Nº do Painel", ""),
+        record.get("Subevento", ""),
+        record.get("Dia", ""),
+        record.get("Hora", ""),
+        int(record.get("Clareza_objetivos", 0)),
+        int(record.get("Metodologia", 0)),
+        int(record.get("Qualidade_resultados", 0)),
+        int(record.get("Relevancia_originalidade", 0)),
+        int(record.get("Apresentacao_defesa", 0)),
+        record.get("Observacoes", "")
+    )
+    with sqlite3.connect(EVAL_DB) as conn:
+        c = conn.cursor()
+        try:
+            c.execute(f"""
+                INSERT INTO {DB_TABLE} (
+                    created_at, sheet, avaliador, aluno, orientador, titulo, painel, subevento, dia, hora,
+                    clareza_objetivos, metodologia, qualidade_resultados, relevancia_originalidade, apresentacao_defesa, observacoes
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, payload)
+            conn.commit()
+            return True, "Avaliação salva com sucesso no banco de dados."
+        except sqlite3.IntegrityError:
+            return False, "Avaliação já existente para este avaliador nesse painel/dia/hora (trava de duplicidade)."
+        except Exception as e:
+            return False, f"Erro ao salvar no banco: {e}"
+
+def load_evaluations_df() -> pd.DataFrame:
+    """Carrega todas as avaliações do SQLite para DataFrame."""
+    if not EVAL_DB.exists():
+        return pd.DataFrame()
+    with sqlite3.connect(EVAL_DB) as conn:
+        df = pd.read_sql_query(f"SELECT * FROM {DB_TABLE} ORDER BY created_at DESC, id DESC", conn)
+    return df
+
+def export_evals_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Respostas")
+    buf.seek(0)
+    return buf.getvalue()
+
+def export_evals_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+def is_operator(pin_input: str) -> bool:
+    """Valida PIN do operador via st.secrets['OPERATOR_PIN'] (fallback '0000')."""
+    conf = ""
+    try:
+        conf = st.secrets.get("OPERATOR_PIN", "")
+    except Exception:
+        conf = ""
+    if not conf:
+        conf = "0000"
+    return str(pin_input).strip() == str(conf).strip()
+
+# =========================
+# QR helpers (compactação/encoding)
+# =========================
+def encode_payload(payload: dict, mode: str = "json") -> str:
+    """
+    mode:
+      - 'json'   : JSON compacto
+      - 'gz+b64' : JSON compacto -> gzip -> base64 URL-safe
+    """
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if mode == "gz+b64":
+        comp = gzip.compress(raw.encode("utf-8"))
+        return base64.urlsafe_b64encode(comp).decode("ascii")
+    return raw
+
+def make_qr_image(payload_obj, box_size=5, border=1,
+                  size_mode: str = "mini",   # 'normal' | 'mini' | 'ultra'
+                  encoding: str = "gz+b64"   # 'json' | 'gz+b64'
+                  ):
+    """
+    Gera QR com:
+      - níveis:
+          normal = tudo
+          mini   = remove 'titulo'
+          ultra  = mantém apenas painel/dia/hora/subevento/area + cabeçalho curto
+      - encoding:
+          'json'   -> JSON compacto
+          'gz+b64' -> JSON compacto gz + base64
+    """
+    payload = payload_obj
+    if isinstance(payload_obj, dict) and "trabalhos" in payload_obj:
+        if size_mode == "mini":
+            slim = [{k: v for k, v in r.items() if k != "titulo"} for r in payload_obj["trabalhos"]]
+            payload = {**payload_obj, "trabalhos": slim}
+        elif size_mode == "ultra":
+            keep = {"painel", "dia", "hora", "subevento", "area"}
+            slim = [{k: r.get(k, "") for k in keep} for r in payload_obj["trabalhos"]]
+            payload = {"a": payload_obj.get("avaliador", ""), "n": payload_obj.get("quantidade_trabalhos", len(slim)), "t": slim}
+
+    txt = encode_payload(payload, encoding)
+
+    def try_build(txt_, err_level):
+        qr = qrcode.QRCode(version=None, error_correction=err_level, box_size=box_size, border=border)
+        qr.add_data(txt_)
         qr.make(fit=True)
         return qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    payload = payload_obj
-    if mini and "trabalhos" in payload:
-        slim = [{k: v for k, v in r.items() if k != "titulo"} for r in payload["trabalhos"]]
-        payload = {**payload, "trabalhos": slim}
-    txt = to_text(payload)
+
     for lvl in [qrcode.constants.ERROR_CORRECT_Q,
                 qrcode.constants.ERROR_CORRECT_M,
                 qrcode.constants.ERROR_CORRECT_L]:
@@ -180,9 +302,10 @@ def make_qr_image(payload_obj, box_size=6, border=2, mini=False):
             return try_build(txt, lvl)
         except Exception:
             continue
-    if not mini:
-        return make_qr_image(payload_obj, box_size, border, mini=True)
-    raise RuntimeError("QR muito grande mesmo no modo compacto.")
+
+    if size_mode != "ultra" or encoding != "gz+b64":
+        return make_qr_image(payload_obj, box_size=box_size, border=border, size_mode="ultra", encoding="gz+b64")
+    raise RuntimeError("QR ainda excede a capacidade mesmo em ultra + gzip.")
 
 def badge_evento(subeventos: list[str]) -> str:
     if not subeventos:
@@ -209,7 +332,6 @@ if uploaded:
     xls = pd.ExcelFile(uploaded)
     df_dict = {name: pd.read_excel(xls, sheet_name=name) for name in xls.sheet_names}
 else:
-    # tenta carregar arquivos locais
     for p in [Path("SPG.xlsx"), Path("SICT.xlsx"), Path("cronograma_SICT_SPG.xlsx"), Path("cronograma.xlsx")]:
         if p.exists():
             xls = pd.ExcelFile(p)
@@ -223,6 +345,9 @@ if not df_dict:
 sheet_name = st.sidebar.selectbox("Aba", list(df_dict.keys()), index=0)
 raw_df = df_dict[sheet_name]
 df = tidy_dataframe(ensure_expected_columns(raw_df))
+
+# Inicia/garante banco
+init_db()
 
 # =========================
 # Query params (roteamento simples)
@@ -245,15 +370,18 @@ eval_map = build_mapping_by_evaluator(df)
 all_evals = sorted(eval_map.keys())
 
 st.subheader(f"🎯 Trabalhos por Avaliador — Aba: **{sheet_name}**")
-c1, c2, c3 = st.columns([2,1,1])
+c1, c2, c3 = st.columns([2,1.2,1.2])
 with c1:
     selected_eval = st.selectbox("Avaliador(a)", [""] + all_evals,
                                  index=(all_evals.index(qp_avaliador)+1 if qp_avaliador in all_evals else 0))
 with c2:
-    mini_mode = st.checkbox("QR mini (sem título)", value=False)
+    qr_mode = st.selectbox("Tamanho do conteúdo do QR",
+                           ["normal", "mini", "ultra"], index=1,
+                           help="mini remove títulos; ultra mantém apenas painel/dia/hora/subevento/área")
 with c3:
-    show_ids = st.checkbox("Mostrar ID interno da linha", value=False,
-                           help="Útil para auditoria do link 'Avaliar'.")
+    qr_enc = st.selectbox("Codificação",
+                          ["json", "gz+b64"], index=1,
+                          help="gz+b64 deixa o QR menor (precisa de decodificação no leitor)")
 
 if selected_eval:
     # Tabela de trabalhos do avaliador
@@ -279,9 +407,6 @@ if selected_eval:
     df_show_ren["Avaliar"] = links
 
     cols_final = ["Aluno(a)", "Título", "Orientador(a)", "Nº do Painel", "Área", "Subevento", "Dia", "Hora", "Avaliar"]
-    if show_ids:
-        cols_final = ["ID"] + cols_final
-
     st.data_editor(
         df_show_ren[cols_final],
         use_container_width=True,
@@ -297,13 +422,13 @@ if selected_eval:
         "quantidade_trabalhos": len(eval_map[selected_eval]),
         "trabalhos": eval_map[selected_eval]
     }
-    img = make_qr_image(payload, box_size=6, border=2, mini=mini_mode)
+    img = make_qr_image(payload, box_size=5, border=1, size_mode=qr_mode, encoding=qr_enc)
     st.image(img, caption=f"QR — {selected_eval}")
     buf = io.BytesIO(); img.save(buf, format="PNG")
     st.download_button("⬇️ Baixar QR", buf.getvalue(), f"QR_{selected_eval}.png", "image/png")
 
-    # ZIP (todos, em modo mini)
-    if st.checkbox("Gerar ZIP com todos os QRs (mini)"):
+    # ZIP (todos, em modo ultra + gz+b64)
+    if st.checkbox("Gerar ZIP com todos os QRs (ultra + gz+b64)"):
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in all_evals:
@@ -312,10 +437,10 @@ if selected_eval:
                     "quantidade_trabalhos": len(eval_map[name]),
                     "trabalhos": eval_map[name]
                 }
-                img_n = make_qr_image(payload_n, box_size=6, border=2, mini=True)
+                img_n = make_qr_image(payload_n, box_size=5, border=1, size_mode="ultra", encoding="gz+b64")
                 b = io.BytesIO(); img_n.save(b, format="PNG")
                 zf.writestr(f"QR_{name}.png", b.getvalue())
-        st.download_button("⬇️ Baixar ZIP (mini)", zip_buffer.getvalue(),
+        st.download_button("⬇️ Baixar ZIP (ultra)", zip_buffer.getvalue(),
                            f"QRs_{sheet_name}.zip", "application/zip")
 
 st.divider()
@@ -336,7 +461,7 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
             work = None
 
         if work:
-            # --- FORM (apenas campos + submit; sem download_button aqui dentro) ---
+            # --- FORM (somente campos + submit; sem download_button aqui dentro) ---
             with st.form(key=f"form_{qp_avaliador}_{idx}"):
                 c1, c2 = st.columns([2, 2])
                 with c1:
@@ -360,7 +485,6 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
 
                 submitted = st.form_submit_button("Salvar avaliação")
                 if submitted:
-                    # 1) Registro
                     record = {
                         "Sheet": sheet_name,
                         "Avaliador": qp_avaliador,
@@ -379,40 +503,111 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                         "Observacoes": obs
                     }
 
-                    # 2) Lê existentes (se houver)
-                    df_old = pd.DataFrame()
-                    if EVAL_FILE.exists():
-                        try:
-                            df_old = pd.read_excel(EVAL_FILE, sheet_name=EVAL_SHEET)
-                            if not isinstance(df_old, pd.DataFrame):
-                                df_old = pd.DataFrame()
-                        except Exception:
-                            df_old = pd.DataFrame()
+                    ok, msg = save_evaluation_sqlite(record)
+                    if ok:
+                        st.success("✅ " + msg)
+                    else:
+                        st.warning("⚠️ " + msg)
 
-                    # 3) Concatena e salva em DISCO (permanente)
-                    df_new = pd.concat([df_old, pd.DataFrame([record])], ignore_index=True)
-                    with pd.ExcelWriter(EVAL_FILE, engine="openpyxl") as writer:
-                        df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
+# =========================
+# ÁREA DO OPERADOR (PIN) — Filtros, Tabela, Exportação
+# =========================
+st.divider()
+with st.sidebar.expander("🔐 Área do Operador", expanded=False):
+    pin_try = st.text_input("PIN do operador", type="password")
+    op_go = st.button("Entrar")
 
-                    st.success("✅ Avaliação salva em 'avaliacoes.xlsx' (aba 'Respostas').")
+if 'operator_mode' not in st.session_state:
+    st.session_state['operator_mode'] = False
+if op_go:
+    st.session_state['operator_mode'] = is_operator(pin_try)
 
-                    # 4) Prepara BYTES para download (guardar na sessão)
-                    buf_x = io.BytesIO()
-                    # Use 'xlsxwriter' se instalado; se preferir, pode trocar para 'openpyxl'
-                    with pd.ExcelWriter(buf_x, engine="xlsxwriter") as writer:
-                        df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
-                    buf_x.seek(0)
-                    st.session_state["avaliacoes_xlsx_bytes"] = buf_x.getvalue()
-                    st.session_state["avaliacoes_ready"] = True
+if st.session_state['operator_mode']:
+    st.subheader("📊 Painel do Operador — Resumo & Exportação")
 
-            # --- FORA do form: botão de download ---
-            if st.session_state.get("avaliacoes_ready") and st.session_state.get("avaliacoes_xlsx_bytes"):
-                st.download_button(
-                    "⬇️ Baixar avaliações (Excel)",
-                    data=st.session_state["avaliacoes_xlsx_bytes"],
-                    file_name="avaliacoes.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_avaliacoes_outside_form"
-                )
+    df_evals = load_evaluations_df()
+    if df_evals.empty:
+        st.info("Sem avaliações registradas ainda.")
     else:
-        st.error("Avaliador não encontrado nos dados atuais.")
+        # Filtros
+        left, mid, right, right2 = st.columns([1.5, 1.5, 1, 1])
+        with left:
+            sub_opts = ["(Todos)"] + sorted([x for x in df_evals["subevento"].dropna().unique().tolist() if x])
+            sub_sel = st.selectbox("Subevento", options=sub_opts, index=0)
+        with mid:
+            aval_opts = ["(Todos)"] + sorted([x for x in df_evals["avaliador"].dropna().unique().tolist() if x])
+            aval_sel = st.selectbox("Avaliador(a)", options=aval_opts, index=0)
+        with right:
+            dia_opts = ["(Todos)"] + sorted([x for x in df_evals["dia"].dropna().unique().tolist() if x])
+            dia_sel = st.selectbox("Dia", options=dia_opts, index=0)
+        with right2:
+            hora_opts = ["(Todos)"] + sorted([x for x in df_evals["hora"].dropna().unique().tolist() if x])
+            hora_sel = st.selectbox("Hora", options=hora_opts, index=0)
+
+        dff = df_evals.copy()
+        if sub_sel != "(Todos)":
+            dff = dff[dff["subevento"] == sub_sel]
+        if aval_sel != "(Todos)":
+            dff = dff[dff["avaliador"] == aval_sel]
+        if dia_sel != "(Todos)":
+            dff = dff[dff["dia"] == dia_sel]
+        if hora_sel != "(Todos)":
+            dff = dff[dff["hora"] == hora_sel]
+
+        # Métricas
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total de avaliações", len(dff))
+        m2.metric("Avaliadores únicos", dff["avaliador"].nunique())
+        m3.metric("Trabalhos únicos", dff[["painel","dia","hora","subevento"]].drop_duplicates().shape[0])
+        m4.metric("Última atualização (UTC)", dff["created_at"].max() if not dff.empty else "—")
+
+        # Tabela principal
+        st.dataframe(
+            dff[[
+                "created_at","sheet","avaliador","aluno","orientador","titulo",
+                "painel","subevento","dia","hora",
+                "clareza_objetivos","metodologia","qualidade_resultados","relevancia_originalidade","apresentacao_defesa",
+                "observacoes","id"
+            ]].rename(columns={
+                "created_at":"Quando(UTC)","sheet":"Aba","avaliador":"Avaliador",
+                "aluno":"Aluno(a)","orientador":"Orientador(a)","titulo":"Título",
+                "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
+                "clareza_objetivos":"Clareza","metodologia":"Metodologia","qualidade_resultados":"Resultados",
+                "relevancia_originalidade":"Relevância","apresentacao_defesa":"Apresentação",
+                "observacoes":"Observações","id":"ID"
+            }),
+            use_container_width=True,
+            height=420
+        )
+
+        # Exportações
+        colx, coly = st.columns([1,1])
+        with colx:
+            if st.button("Gerar Excel para exportação"):
+                st.session_state["op_excel_bytes"] = export_evals_to_excel_bytes(dff)
+                st.session_state["op_excel_ready"] = True
+        with coly:
+            if st.button("Gerar CSV para exportação"):
+                st.session_state["op_csv_bytes"] = export_evals_to_csv_bytes(dff)
+                st.session_state["op_csv_ready"] = True
+
+        # Botões de download
+        dcol1, dcol2 = st.columns([1,1])
+        with dcol1:
+            if st.session_state.get("op_excel_ready") and st.session_state.get("op_excel_bytes"):
+                st.download_button(
+                    "⬇️ Baixar Excel (Respostas filtradas)",
+                    data=st.session_state["op_excel_bytes"],
+                    file_name="avaliacoes_filtradas.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="op_download_excel"
+                )
+        with dcol2:
+            if st.session_state.get("op_csv_ready") and st.session_state.get("op_csv_bytes"):
+                st.download_button(
+                    "⬇️ Baixar CSV (Respostas filtradas)",
+                    data=st.session_state["op_csv_bytes"],
+                    file_name="avaliacoes_filtradas.csv",
+                    mime="text/csv",
+                    key="op_download_csv"
+                )
