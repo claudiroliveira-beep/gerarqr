@@ -194,27 +194,50 @@ def init_db():
         conn.commit()
 
 def save_evaluation_sqlite(record: dict) -> tuple[bool, str]:
-    """Salva a avaliação no SQLite. Retorna (ok, msg)."""
-    payload = (
-        datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        record.get("Sheet", ""),
-        record.get("Avaliador", ""),
-        record.get("Aluno(a)", ""),
-        record.get("Orientador(a)", ""),
-        record.get("Título", ""),
-        record.get("Nº do Painel", ""),
-        record.get("Subevento", ""),
-        record.get("Dia", ""),
-        record.get("Hora", ""),
-        float(record.get("Clareza_objetivos", 0.0)),
-        float(record.get("Metodologia", 0.0)),
-        float(record.get("Qualidade_resultados", 0.0)),
-        float(record.get("Relevancia_originalidade", 0.0)),
-        float(record.get("Apresentacao_defesa", 0.0)),
-        record.get("Observacoes", "")
+    """Salva a avaliação no SQLite. Retorna (ok, msg). Bloqueia >2 avaliações por trabalho."""
+    # Chaves que definem um "trabalho"
+    work_keys = (
+        record.get("sheet", ""),
+        record.get("painel", ""),
+        record.get("dia", ""),
+        record.get("hora", ""),
+        record.get("subevento", ""),
+        record.get("titulo", ""),
+        record.get("aluno", ""),
+        record.get("orientador", ""),
     )
+
     with sqlite3.connect(EVAL_DB) as conn:
         c = conn.cursor()
+
+        # 1) Verifica quantas avaliações já existem para esse trabalho
+        c.execute(f"""
+            SELECT COUNT(*) FROM {DB_TABLE}
+            WHERE sheet=? AND painel=? AND dia=? AND hora=? AND subevento=? AND titulo=? AND aluno=? AND orientador=?
+        """, work_keys)
+        already = c.fetchone()[0] or 0
+        if already >= 2:
+            return False, "Limite de 2 avaliações por trabalho já atingido. Exclusão necessária para nova avaliação."
+
+        # 2) Tenta inserir (a trava de duplicidade por avaliador continua valendo)
+        payload = (
+            datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            record.get("sheet", ""),
+            record.get("avaliador", ""),
+            record.get("aluno", ""),
+            record.get("orientador", ""),
+            record.get("titulo", ""),
+            record.get("painel", ""),
+            record.get("subevento", ""),
+            record.get("dia", ""),
+            record.get("hora", ""),
+            float(record.get("clareza_objetivos", 0.0)),
+            float(record.get("metodologia", 0.0)),
+            float(record.get("qualidade_resultados", 0.0)),
+            float(record.get("relevancia_originalidade", 0.0)),
+            float(record.get("apresentacao_defesa", 0.0)),
+            record.get("observacoes", "")
+        )
         try:
             c.execute(f"""
                 INSERT INTO {DB_TABLE} (
@@ -228,6 +251,7 @@ def save_evaluation_sqlite(record: dict) -> tuple[bool, str]:
             return False, "Avaliação já existente para este avaliador nesse painel/dia/hora (trava de duplicidade)."
         except Exception as e:
             return False, f"Erro ao salvar no banco: {e}"
+
 
 def load_evaluations_df() -> pd.DataFrame:
     """Carrega todas as avaliações do SQLite para DataFrame."""
@@ -944,25 +968,32 @@ if st.session_state['operator_mode']:
         
         with tab_media:
             agg = aggregate_by_work(dff)
-        
+
             mm1, mm2 = st.columns(2)
             mm1.metric("Trabalhos com ≥ 2 avaliadores", int((agg["avaliadores"] >= 2).sum()) if not agg.empty else 0)
             mm2.metric("Média geral (todos os trabalhos)", agg["media_total"].mean().round(2) if not agg.empty else "—")
-        
-            st.dataframe(
-                agg[[
-                    "sheet","titulo","aluno","orientador",
-                    "painel","subevento","dia","hora",
-                    "avaliadores","media_total"
-                ]].rename(columns={
-                    "sheet":"Aba","titulo":"Título","aluno":"Aluno(a)","orientador":"Orientador(a)",
-                    "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
-                    "avaliadores":"# Avaliadores","media_total":"Média final"
-                }),
-                use_container_width=True,
-                height=420
-            )
-        
+
+            # Renomeia colunas para exibição
+            agg_view = agg[[
+                "sheet","titulo","aluno","orientador",
+                "painel","subevento","dia","hora",
+                "avaliadores","media_total"
+            ]].rename(columns={
+                "sheet":"Aba","titulo":"Título","aluno":"Aluno(a)","orientador":"Orientador(a)",
+                "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
+                "avaliadores":"# Avaliadores","media_total":"Média final"
+            })
+            
+            # Função de destaque: azul claro quando há apenas 1 avaliação
+            def highlight_one(row):
+                if row["# Avaliadores"] == 1:
+                    return ['background-color: #E0F2FE'] * len(row)  # azul claro
+                return [''] * len(row)
+            
+            styled = agg_view.style.apply(highlight_one, axis=1)
+            
+            st.dataframe(styled, use_container_width=True, height=420)
+            
             c3, c4 = st.columns([1,1])
             with c3:
                 if st.button("Gerar Excel (Médias)", key="gen_excel_medias"):
