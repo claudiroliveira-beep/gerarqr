@@ -20,8 +20,8 @@ from PIL import Image
 # =========================
 # Config da página
 # =========================
-st.set_page_config(page_title="SICT/SPG — QRs & Avaliações", page_icon="🧾", layout="wide")
-st.title("🧾 SICT / SPG — Avaliações e QRs (Excel)")
+st.set_page_config(page_title="SICT/SPG - Avaliações", page_icon="🧾", layout="wide")
+st.title("🧾 SICT / SPG — Avaliações")
 
 # =========================
 # Constantes
