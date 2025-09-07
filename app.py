@@ -837,22 +837,40 @@ if st.session_state['operator_mode']:
                 )
         
             st.markdown("---")
-            st.markdown("### Pendências por trabalho (faltando avaliações)")
             if pend_por_trabalho.empty:
                 st.success("Todos os trabalhos estão com avaliações completas. ✅")
             else:
-                st.dataframe(
-                    pend_por_trabalho[[
-                        "sheet","titulo","aluno","orientador","painel","subevento","dia","hora",
-                        "esperados","recebidos","faltam"
-                    ]].rename(columns={
-                        "sheet":"Aba","titulo":"Título","aluno":"Aluno(a)","orientador":"Orientador(a)",
-                        "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
-                        "esperados":"Esperados","# Avaliações recebidas":"recebidos","faltam":"Faltam"
-                    }).rename(columns={"recebidos":"Recebidos"}),
-                    use_container_width=True, height=360
-                )
-        
+                # preparar view com nomes amigáveis
+                pend_view = pend_por_trabalho[[
+                    "sheet","titulo","aluno","orientador",
+                    "painel","subevento","dia","hora",
+                    "esperados","recebidos","faltam"
+                ]].rename(columns={
+                    "sheet": "Aba",
+                    "titulo": "Título",
+                    "aluno": "Aluno(a)",
+                    "orientador": "Orientador(a)",
+                    "painel": "Nº Painel",
+                    "subevento": "Subevento",
+                    "dia": "Dia",
+                    "hora": "Hora",
+                    "esperados": "Esperados",
+                    "recebidos": "Recebidos",
+                    "faltam": "Faltam",
+                })
+            
+                # estilo por linha: azul claro para Recebidos==1, vermelho claro para Recebidos==0
+                def color_pend(row):
+                    if row["Recebidos"] == 0:
+                        return ['background-color: #FEE2E2'] * len(row)  # vermelho claro
+                    if row["Recebidos"] == 1:
+                        return ['background-color: #E0F2FE'] * len(row)  # azul claro
+                    return [''] * len(row)
+            
+                styled = pend_view.style.apply(color_pend, axis=1)
+            
+                st.dataframe(styled, use_container_width=True, height=360)
+            
                 colp1, colp2 = st.columns([1,1])
                 with colp1:
                     if st.button("Gerar Excel (Pendências por avaliador)", key="gen_excel_pend_av"):
@@ -862,7 +880,7 @@ if st.session_state['operator_mode']:
                     if st.button("Gerar Excel (Pendências por trabalho)", key="gen_excel_pend_trab"):
                         st.session_state["op_excel_bytes_pend_trab"] = export_evals_to_excel_bytes(pend_por_trabalho)
                         st.session_state["op_excel_ready_pend_trab"] = True
-        
+            
                 dlp1, dlp2 = st.columns([1,1])
                 with dlp1:
                     if st.session_state.get("op_excel_ready_pend_av") and st.session_state.get("op_excel_bytes_pend_av") is not None:
@@ -882,6 +900,7 @@ if st.session_state['operator_mode']:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="dl_excel_pend_trab"
                         )
+            
 
         
 
