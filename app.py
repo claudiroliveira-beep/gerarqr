@@ -526,29 +526,29 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
 
                 st.markdown("**Avaliação — total máximo 10 pontos (cada item em passos de 0,1)**")
                 st.caption(
-                    f"Limites por item: 1. ≤ {ITEM_MAX['g1']:.1f}, 2. ≤ {ITEM_MAX['g2']:.1f}, "
-                    f"3. ≤ {ITEM_MAX['g3']:.1f}, 4. ≤ {ITEM_MAX['g4']:.1f}, 5. ≤ {ITEM_MAX['g5']:.1f}."
+                    f"Limites por item: Q1. ≤ {ITEM_MAX['g1']:.1f}, Q2. ≤ {ITEM_MAX['g2']:.1f}, "
+                    f"Q3. ≤ {ITEM_MAX['g3']:.1f}, Q4. ≤ {ITEM_MAX['g4']:.1f}, Q5. ≤ {ITEM_MAX['g5']:.1f}."
                 )
                 
                 # Entradas com cap por item e passo 0.1
                 g1 = st.number_input(
-                    "1. A formatação do pôster está de fácil leitura e houve a inclusão de ferramentas adequadas para exposição do tema?",
+                    "Q1. A formatação do pôster está de fácil leitura e houve a inclusão de ferramentas adequadas para exposição do tema?",
                     min_value=0.0, max_value=float(ITEM_MAX["g1"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g2 = st.number_input(
-                    "2. A organização do material apresentado segue uma ordem de fácil compreensão?",
+                    "Q2. A organização do material apresentado segue uma ordem de fácil compreensão?",
                     min_value=0.0, max_value=float(ITEM_MAX["g2"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g3 = st.number_input(
-                    "3. O(a) bolsista/voluntário(a) respondeu às perguntas da banca adequadamente?",
+                    "Q3. O(a) bolsista/voluntário(a) respondeu às perguntas da banca adequadamente?",
                     min_value=0.0, max_value=float(ITEM_MAX["g3"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g4 = st.number_input(
-                    "4. O(a) bolsista/voluntário(a) apresentou domínio do tema?",
+                    "Q4. O(a) bolsista/voluntário(a) apresentou domínio do tema?",
                     min_value=0.0, max_value=float(ITEM_MAX["g4"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g5 = st.number_input(
-                    "5. Qualidade dos resultados",
+                    "Q5. Qualidade dos resultados",
                     min_value=0.0, max_value=float(ITEM_MAX["g5"]), value=0.0, step=0.1, format="%.1f"
                 )
                 
