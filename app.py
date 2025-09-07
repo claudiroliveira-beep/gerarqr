@@ -206,11 +206,11 @@ def save_evaluation_sqlite(record: dict) -> tuple[bool, str]:
         record.get("Subevento", ""),
         record.get("Dia", ""),
         record.get("Hora", ""),
-        int(record.get("Clareza_objetivos", 0.0)),
-        int(record.get("Metodologia", 0.0)),
-        int(record.get("Qualidade_resultados", 0.0)),
-        int(record.get("Relevancia_originalidade", 0.0)),
-        int(record.get("Apresentacao_defesa", 0.0)),
+        float(record.get("Clareza_objetivos", 0.0)),
+        float(record.get("Metodologia", 0.0)),
+        float(record.get("Qualidade_resultados", 0.0)),
+        float(record.get("Relevancia_originalidade", 0.0)),
+        float(record.get("Apresentacao_defesa", 0.0)),
         record.get("Observacoes", "")
     )
     with sqlite3.connect(EVAL_DB) as conn:
