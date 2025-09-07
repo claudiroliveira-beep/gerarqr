@@ -237,6 +237,22 @@ def load_evaluations_df() -> pd.DataFrame:
         df = pd.read_sql_query(f"SELECT * FROM {DB_TABLE} ORDER BY created_at DESC, id DESC", conn)
     return df
 
+
+def delete_evaluations_by_ids(ids: list[int]) -> tuple[int, str]:
+    """Exclui avaliações pelo ID. Retorna (qtd_excluida, msg)."""
+    if not ids:
+        return 0, "Nenhum ID informado."
+    placeholders = ",".join(["?"] * len(ids))
+    with sqlite3.connect(EVAL_DB) as conn:
+        c = conn.cursor()
+        try:
+            c.execute(f"DELETE FROM {DB_TABLE} WHERE id IN ({placeholders})", ids)
+            conn.commit()
+            return c.rowcount, f"{c.rowcount} avaliação(ões) excluída(s)."
+        except Exception as e:
+            return 0, f"Erro ao excluir: {e}"
+
+
 def export_evals_to_excel_bytes(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
@@ -704,6 +720,37 @@ if st.session_state['operator_mode']:
                         mime="text/csv",
                         key="dl_csv_respostas"
                     )
+            
+            # 👇 AQUI entra o bloco de exclusão
+            st.markdown("### Excluir avaliações (Operador)")
+        
+            opcoes_ids = []
+            for _, row in dff.iterrows():
+                label = f"ID {int(row['id'])} — {row['avaliador']} • {row['titulo']} • Painel {row['painel']} • {row['dia']} {row['hora']} ({row['subevento']})"
+                opcoes_ids.append((label, int(row["id"])))
+        
+            labels = [lbl for (lbl, _id) in opcoes_ids]
+            map_label_to_id = {lbl: _id for (lbl, _id) in opcoes_ids}
+        
+            sel_labels = st.multiselect(
+                "Selecione uma ou mais avaliações para excluir:",
+                options=labels,
+                help="A exclusão é permanente. Use com cautela."
+            )
+        
+            sel_ids = [map_label_to_id[lbl] for lbl in sel_labels]
+        
+            col_del1, col_del2 = st.columns([1,3])
+            with col_del1:
+                confirm = st.checkbox("Confirmo a exclusão")
+            with col_del2:
+                if st.button("🗑️ Excluir selecionadas", disabled=(not sel_ids or not confirm)):
+                    qtd, msg = delete_evaluations_by_ids(sel_ids)
+                    if qtd > 0:
+                        st.success("✅ " + msg)
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ " + msg)
         
         with tab_media:
             agg = aggregate_by_work(dff)
@@ -755,6 +802,7 @@ if st.session_state['operator_mode']:
                         mime="text/csv",
                         key="dl_csv_medias"
                     )
+                    
 
 
 
