@@ -152,6 +152,16 @@ def build_mapping_by_evaluator(df: pd.DataFrame) -> dict:
         )
     return eval_map
 
+# Limites por item e total
+ITEM_MAX = {
+    "g1": 1.0,
+    "g2": 1.0,
+    "g3": 2.0,
+    "g4": 3.0,
+    "g5": 3.0,
+}
+TOTAL_MAX = 10.0
+
 # =========================
 # SQLite: init / save / load
 # =========================
@@ -514,42 +524,46 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                     st.text_input("Dia", value=work["dia"], disabled=True)
                     st.text_input("Hora", value=work["hora"], disabled=True)
 
-                st.markdown("**Avaliação — total máximo 10 pontos (cada item 0.0 a 10.0 em passos de 0.1)**")
+                st.markdown("**Avaliação — total máximo 10 pontos (cada item em passos de 0,1)**")
+                st.caption(
+                    f"Limites por item: g1 ≤ {ITEM_MAX['g1']:.1f}, g2 ≤ {ITEM_MAX['g2']:.1f}, "
+                    f"g3 ≤ {ITEM_MAX['g3']:.1f}, g4 ≤ {ITEM_MAX['g4']:.1f}, g5 ≤ {ITEM_MAX['g5']:.1f}."
+                )
                 
-                # Controles numéricos com passo 0.1
+                # Entradas com cap por item e passo 0.1
                 g1 = st.number_input(
                     "1) A formatação do pôster está de fácil leitura e houve a inclusão de ferramentas adequadas para exposição do tema?",
-                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                    min_value=0.0, max_value=float(ITEM_MAX["g1"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g2 = st.number_input(
                     "2) A organização do material apresentado segue uma ordem de fácil compreensão?",
-                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                    min_value=0.0, max_value=float(ITEM_MAX["g2"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g3 = st.number_input(
                     "3) O(a) bolsista/voluntário(a) respondeu às perguntas da banca adequadamente?",
-                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                    min_value=0.0, max_value=float(ITEM_MAX["g3"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g4 = st.number_input(
                     "4) O(a) bolsista/voluntário(a) apresentou domínio do tema?",
-                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                    min_value=0.0, max_value=float(ITEM_MAX["g4"]), value=0.0, step=0.1, format="%.1f"
                 )
                 g5 = st.number_input(
                     "5) Qualidade dos resultados",
-                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                    min_value=0.0, max_value=float(ITEM_MAX["g5"]), value=0.0, step=0.1, format="%.1f"
                 )
                 
-                obs = st.text_area("Observações (opcional)", "")
-                
-                # Cálculo e validação do total
+                # Cálculo e validação
                 total = round(g1 + g2 + g3 + g4 + g5, 1)
-                st.info(f"**Total atual:** {total:.1f} / 10.0")
+                restante = round(TOTAL_MAX - total, 1)
+                st.info(f"**Total atual:** {total:.1f} / {TOTAL_MAX:.1f}  •  **Pontos restantes:** {max(restante, 0):.1f}")
                 
-                # Se exceder 10, bloqueia o envio e mostra erro
-                excede = total > 10.0
-                if excede:
+                # Regra: total não pode ultrapassar 10 (mesmo com caps individuais)
+                excede_total = total > TOTAL_MAX
+                if excede_total:
                     st.error("A soma dos itens ultrapassa 10. Ajuste as notas antes de salvar.")
                 
-                submitted = st.form_submit_button("Salvar avaliação", disabled=excede)
+                submitted = st.form_submit_button("Salvar avaliação", disabled=excede_total)
+                
 
                 if submitted:
                     record = {
@@ -569,7 +583,27 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                         "Apresentacao_defesa": float(g5),
                         "Observacoes": obs
                     }
-                
+                if total > TOTAL_MAX:
+                    st.error("Não foi possível salvar: a soma dos itens ultrapassa 10.")
+                    # Apenas sai do bloco sem salvar (nem mostra sucesso)
+                else:
+                    record = {
+                        "Sheet": sheet_name,
+                        "Avaliador": qp_avaliador,
+                        "Aluno(a)": work["aluno"],
+                        "Orientador(a)": work["orientador"],
+                        "Título": work["titulo"],
+                        "Nº do Painel": work["painel"],
+                        "Subevento": work["subevento"],
+                        "Dia": work["dia"],
+                        "Hora": work["hora"],
+                        "Clareza_objetivos": float(g1),
+                        "Metodologia": float(g2),
+                        "Qualidade_resultados": float(g3),
+                        "Relevancia_originalidade": float(g4),
+                        "Apresentacao_defesa": float(g5),
+                        "Observacoes": obs
+                    }
                     ok, msg = save_evaluation_sqlite(record)
                     if ok:
                         st.success(f"✅ {msg} (Total: {total:.1f}/10)")
