@@ -311,6 +311,124 @@ def aggregate_by_work(df: pd.DataFrame) -> pd.DataFrame:
 
     out["media_total"] = out["media_total"].round(1)
     return out
+    
+##### Construir designações esperadas e pendências 
+ASSIGN_KEYS = ["sheet","painel","dia","hora","subevento","titulo","aluno","orientador","area","avaliador"]
+
+def build_expected_assignments(df_sched: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+    """
+    Constrói a lista de 'designações esperadas' a partir da planilha do cronograma:
+    uma linha por (trabalho x avaliador designado).
+    """
+    if df_sched.empty:
+        return pd.DataFrame(columns=ASSIGN_KEYS)
+
+    cols = {
+        "titulo": "Título",
+        "aluno": "Aluno(a)",
+        "orientador": "Orientador(a)",
+        "area": "Áreas",
+        "painel": "Nº do Painel",
+        "subevento": "Subevento",
+        "dia": "Dia",
+        "hora": "Hora",
+        "av1": "AVALIADOR 1",
+        "av2": "AVALIADOR 2",
+    }
+    base = df_sched.rename(columns={
+        cols["titulo"]: "titulo",
+        cols["aluno"]: "aluno",
+        cols["orientador"]: "orientador",
+        cols["area"]: "area",
+        cols["painel"]: "painel",
+        cols["subevento"]: "subevento",
+        cols["dia"]: "dia",
+        cols["hora"]: "hora",
+        cols["av1"]: "av1",
+        cols["av2"]: "av2",
+    }).copy()
+
+    rows = []
+    for _, r in base.iterrows():
+        common = {
+            "sheet": sheet_name,
+            "titulo": r.get("titulo",""),
+            "aluno": r.get("aluno",""),
+            "orientador": r.get("orientador",""),
+            "area": r.get("area",""),
+            "painel": r.get("painel",""),
+            "subevento": r.get("subevento",""),
+            "dia": r.get("dia",""),
+            "hora": r.get("hora",""),
+        }
+        a1 = (r.get("av1","") or "").strip()
+        a2 = (r.get("av2","") or "").strip()
+        if a1:
+            rows.append({**common, "avaliador": a1})
+        if a2:
+            rows.append({**common, "avaliador": a2})
+
+    df_assign = pd.DataFrame(rows, columns=ASSIGN_KEYS)
+    # remove possíveis duplicatas
+    df_assign = df_assign.drop_duplicates()
+    return df_assign
+
+def pending_views(df_assign: pd.DataFrame, df_evals: pd.DataFrame):
+    """
+    Retorna duas visões:
+      - pend_por_avaliador: linhas esperadas que não têm avaliação correspondente.
+      - pend_por_trabalho: por trabalho (sem avaliar o avaliador), quantos faltam.
+    """
+    if df_assign.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Filtra colunas relevantes das avaliações
+    eval_keys = ["sheet","painel","dia","hora","subevento","titulo","aluno","orientador","avaliador","id"]
+    dfe = df_evals.copy()
+    if not dfe.empty:
+        # uniformiza nomes (db já usa ascii/minúsculas)
+        # garantimos as colunas necessárias
+        missing = [c for c in ["sheet","painel","dia","hora","subevento","titulo","aluno","orientador","avaliador"] if c not in dfe.columns]
+        for c in missing:
+            dfe[c] = ""
+        dfe = dfe[eval_keys]
+    else:
+        dfe = pd.DataFrame(columns=eval_keys)
+
+    # --- Pendências por avaliador (left join assign x eval) ---
+    merged = df_assign.merge(
+        dfe,
+        how="left",
+        on=["sheet","painel","dia","hora","subevento","titulo","aluno","orientador","avaliador"],
+        suffixes=("", "_ev")
+    )
+    pend_por_avaliador = merged[merged["id"].isna()].copy()
+    pend_por_avaliador = pend_por_avaliador.drop(columns=[c for c in pend_por_avaliador.columns if c.endswith("_ev")], errors="ignore")
+
+    # --- Pendências por trabalho (quantos faltam) ---
+    # Esperado = quantos avaliadores designados por trabalho
+    exp = df_assign.groupby(["sheet","painel","dia","hora","subevento","titulo","aluno","orientador"], dropna=False).agg(
+        esperados=("avaliador", "nunique")
+    ).reset_index()
+
+    # Recebidos = quantas avaliações chegaram por trabalho
+    if dfe.empty:
+        rec = exp.copy()
+        rec["recebidos"] = 0
+    else:
+        rec = dfe.groupby(["sheet","painel","dia","hora","subevento","titulo","aluno","orientador"], dropna=False).agg(
+            recebidos=("avaliador", "nunique")
+        ).reset_index()
+
+    pend_por_trabalho = exp.merge(rec, how="left", on=["sheet","painel","dia","hora","subevento","titulo","aluno","orientador"])
+    pend_por_trabalho["recebidos"] = pend_por_trabalho["recebidos"].fillna(0).astype(int)
+    pend_por_trabalho["faltam"] = (pend_por_trabalho["esperados"] - pend_por_trabalho["recebidos"]).clip(lower=0)
+    pend_por_trabalho = pend_por_trabalho.sort_values(["faltam","dia","hora","subevento","painel"], ascending=[False, True, True, True, True])
+
+    # mantém só os que faltam algo
+    pend_por_trabalho = pend_por_trabalho[pend_por_trabalho["faltam"] > 0]
+
+    return pend_por_avaliador, pend_por_trabalho
 
 
 # =========================
@@ -670,8 +788,80 @@ if st.session_state['operator_mode']:
         m4.metric("Última atualização (UTC)", dff["created_at"].max() if not dff.empty else "—")
         
         # ---- SOMENTE AS TABS ----
-        tab_resp, tab_media = st.tabs(["Respostas", "Médias por trabalho"])
+        tab_resp, tab_media, tab_pend = st.tabs(["Respostas", "Médias por trabalho", "Pendências"])
+
+        # Construção das designações esperadas com base na aba atual da planilha
+        df_assign = build_expected_assignments(df, sheet_name)
         
+        # dff = df_evals filtrado + with_total já feito acima
+        pend_por_avaliador, pend_por_trabalho = pending_views(df_assign, dff)
+
+        ## Pendencias de avaliacoes
+        with tab_pend:
+            st.markdown("### Pendências por avaliador (designado que ainda não enviou)")
+            if pend_por_avaliador.empty:
+                st.success("Sem pendências por avaliador. ✨")
+            else:
+                st.dataframe(
+                    pend_por_avaliador[[
+                        "sheet","avaliador","titulo","aluno","orientador","painel","subevento","dia","hora","area"
+                    ]].rename(columns={
+                        "sheet":"Aba","avaliador":"Avaliador","titulo":"Título","aluno":"Aluno(a)","orientador":"Orientador(a)",
+                        "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora","area":"Área"
+                    }),
+                    use_container_width=True, height=360
+                )
+        
+            st.markdown("---")
+            st.markdown("### Pendências por trabalho (faltando avaliações)")
+            if pend_por_trabalho.empty:
+                st.success("Todos os trabalhos estão com avaliações completas. ✅")
+            else:
+                st.dataframe(
+                    pend_por_trabalho[[
+                        "sheet","titulo","aluno","orientador","painel","subevento","dia","hora",
+                        "esperados","recebidos","faltam"
+                    ]].rename(columns={
+                        "sheet":"Aba","titulo":"Título","aluno":"Aluno(a)","orientador":"Orientador(a)",
+                        "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
+                        "esperados":"Esperados","# Avaliações recebidas":"recebidos","faltam":"Faltam"
+                    }).rename(columns={"recebidos":"Recebidos"}),
+                    use_container_width=True, height=360
+                )
+        
+                colp1, colp2 = st.columns([1,1])
+                with colp1:
+                    if st.button("Gerar Excel (Pendências por avaliador)", key="gen_excel_pend_av"):
+                        st.session_state["op_excel_bytes_pend_av"] = export_evals_to_excel_bytes(pend_por_avaliador)
+                        st.session_state["op_excel_ready_pend_av"] = True
+                with colp2:
+                    if st.button("Gerar Excel (Pendências por trabalho)", key="gen_excel_pend_trab"):
+                        st.session_state["op_excel_bytes_pend_trab"] = export_evals_to_excel_bytes(pend_por_trabalho)
+                        st.session_state["op_excel_ready_pend_trab"] = True
+        
+                dlp1, dlp2 = st.columns([1,1])
+                with dlp1:
+                    if st.session_state.get("op_excel_ready_pend_av") and st.session_state.get("op_excel_bytes_pend_av") is not None:
+                        st.download_button(
+                            "⬇️ Baixar Excel (Pendências por avaliador)",
+                            data=st.session_state["op_excel_bytes_pend_av"],
+                            file_name="pendencias_por_avaliador.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_excel_pend_av"
+                        )
+                with dlp2:
+                    if st.session_state.get("op_excel_ready_pend_trab") and st.session_state.get("op_excel_bytes_pend_trab") is not None:
+                        st.download_button(
+                            "⬇️ Baixar Excel (Pendências por trabalho)",
+                            data=st.session_state["op_excel_bytes_pend_trab"],
+                            file_name="pendencias_por_trabalho.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_excel_pend_trab"
+                        )
+
+        
+
+        ##Continua depois de dff = with_total(dff), que calcula a nota total nas respostas, linha 780
         with tab_resp:
             st.dataframe(
                 dff[[
