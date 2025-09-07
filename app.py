@@ -564,11 +564,11 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                 
                 submitted = st.form_submit_button("Salvar avaliação", disabled=excede_total)
                 
-
                 if submitted:
+                    # Validação definitiva no servidor (não salva se inválido)
                     if total > TOTAL_MAX:
                         st.error("Não foi possível salvar: a soma dos itens ultrapassa 10.")
-                        # Apenas sai do bloco sem salvar (nem mostra sucesso)
+                        # Não salva nada
                     else:
                         record = {
                             "Sheet": sheet_name,
@@ -585,15 +585,16 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                             "Qualidade_resultados": float(g3),
                             "Relevancia_originalidade": float(g4),
                             "Apresentacao_defesa": float(g5),
-                            "Observacoes": obs
+                            "Observacoes": obs,
                         }
+                
                         ok, msg = save_evaluation_sqlite(record)
                         if ok:
                             st.success(f"✅ {msg} (Total: {total:.1f}/10)")
                         else:
                             st.warning("⚠️ " + msg)
-                
 
+            
 # =========================
 # ÁREA DO OPERADOR (PIN) — Filtros, Tabela, Exportação
 # =========================
