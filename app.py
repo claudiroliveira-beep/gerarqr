@@ -551,7 +551,9 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                     "Q5. Qualidade dos resultados",
                     min_value=0.0, max_value=float(ITEM_MAX["g5"]), value=0.0, step=0.1, format="%.1f"
                 )
-                
+
+                obs = st.text_area("Observações (opcional)", "")
+
                 # Cálculo e validação
                 total = round(g1 + g2 + g3 + g4 + g5, 1)
                 restante = round(TOTAL_MAX - total, 1)
