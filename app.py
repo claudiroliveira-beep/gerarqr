@@ -631,7 +631,8 @@ if st.session_state['operator_mode']:
         with right2:
             hora_opts = ["(Todos)"] + sorted([x for x in df_evals["hora"].dropna().unique().tolist() if x])
             hora_sel = st.selectbox("Hora", options=hora_opts, index=0)
-
+        
+        # Aplica filtros
         dff = df_evals.copy()
         if sub_sel != "(Todos)":
             dff = dff[dff["subevento"] == sub_sel]
@@ -641,17 +642,18 @@ if st.session_state['operator_mode']:
             dff = dff[dff["dia"] == dia_sel]
         if hora_sel != "(Todos)":
             dff = dff[dff["hora"] == hora_sel]
-
-        #dff já é o df_evals filtrado
+        
+        # Calcula nota total nas respostas filtradas
         dff = with_total(dff)
         
-        # Métricas (inclui média geral e quantos trabalhos têm 2 avaliadores)
+        # Métricas (opcional; mantenho porque são úteis e não duplicam tabelas)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total de avaliações", len(dff))
         m2.metric("Avaliadores únicos", dff["avaliador"].nunique())
         m3.metric("Trabalhos únicos", dff[["painel","dia","hora","subevento"]].drop_duplicates().shape[0])
         m4.metric("Última atualização (UTC)", dff["created_at"].max() if not dff.empty else "—")
         
+        # ---- SOMENTE AS TABS ----
         tab_resp, tab_media = st.tabs(["Respostas", "Médias por trabalho"])
         
         with tab_resp:
@@ -706,9 +708,8 @@ if st.session_state['operator_mode']:
         with tab_media:
             agg = aggregate_by_work(dff)
         
-            # Métricas específicas de médias
             mm1, mm2 = st.columns(2)
-            mm1.metric("Trabalhos com ≥ 2 avaliadores", int((agg["avaliadores"] >= 2).sum()))
+            mm1.metric("Trabalhos com ≥ 2 avaliadores", int((agg["avaliadores"] >= 2).sum()) if not agg.empty else 0)
             mm2.metric("Média geral (todos os trabalhos)", agg["media_total"].mean().round(2) if not agg.empty else "—")
         
             st.dataframe(
@@ -756,53 +757,5 @@ if st.session_state['operator_mode']:
                     )
 
 
-        # Tabela principal
-        st.dataframe(
-            dff[[
-                "created_at","sheet","avaliador","aluno","orientador","titulo",
-                "painel","subevento","dia","hora",
-                "clareza_objetivos","metodologia","qualidade_resultados","relevancia_originalidade","apresentacao_defesa",
-                "observacoes","id"
-            ]].rename(columns={
-                "created_at":"Quando(UTC)","sheet":"Aba","avaliador":"Avaliador",
-                "aluno":"Aluno(a)","orientador":"Orientador(a)","titulo":"Título",
-                "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
-                "clareza_objetivos":"Clareza","metodologia":"Metodologia","qualidade_resultados":"Resultados",
-                "relevancia_originalidade":"Relevância","apresentacao_defesa":"Apresentação",
-                "observacoes":"Observações","id":"ID"
-            }),
-            use_container_width=True,
-            height=420
-        )
 
-        # Exportações
-        colx, coly = st.columns([1,1])
-        with colx:
-            if st.button("Gerar Excel para exportação"):
-                st.session_state["op_excel_bytes"] = export_evals_to_excel_bytes(dff)
-                st.session_state["op_excel_ready"] = True
-        with coly:
-            if st.button("Gerar CSV para exportação"):
-                st.session_state["op_csv_bytes"] = export_evals_to_csv_bytes(dff)
-                st.session_state["op_csv_ready"] = True
-
-        # Botões de download
-        dcol1, dcol2 = st.columns([1,1])
-        with dcol1:
-            if st.session_state.get("op_excel_ready") and st.session_state.get("op_excel_bytes"):
-                st.download_button(
-                    "⬇️ Baixar Excel (Respostas filtradas)",
-                    data=st.session_state["op_excel_bytes"],
-                    file_name="avaliacoes_filtradas.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="op_download_excel"
-                )
-        with dcol2:
-            if st.session_state.get("op_csv_ready") and st.session_state.get("op_csv_bytes"):
-                st.download_button(
-                    "⬇️ Baixar CSV (Respostas filtradas)",
-                    data=st.session_state["op_csv_bytes"],
-                    file_name="avaliacoes_filtradas.csv",
-                    mime="text/csv",
-                    key="op_download_csv"
-                )
+     
