@@ -1,4 +1,4 @@
-# app.py — Leitura Excel, QRs e Formulário interno de Avaliação (salva em Excel)
+# app.py — SICT/SPG: QRs por avaliador + Formulário interno com salvamento em Excel
 
 import io
 import re
@@ -14,14 +14,17 @@ import qrcode
 from PIL import Image
 
 # =========================
-# Config
+# Config da página
 # =========================
 st.set_page_config(page_title="SICT/SPG — QRs & Avaliações", page_icon="🧾", layout="wide")
 st.title("🧾 SICT / SPG — Avaliações e QRs (Excel)")
 
+# =========================
+# Constantes
+# =========================
 NBSP = "\xa0"
-EVAL_FILE = Path("avaliacoes.xlsx")  # arquivo onde as respostas serão salvas
-EVAL_SHEET = "Respostas"
+EVAL_FILE = Path("avaliacoes.xlsx")      # arquivo permanente com as respostas
+EVAL_SHEET = "Respostas"                 # aba do arquivo de respostas
 
 EXPECTED_COLS = {
     "Aluno(a)": ["aluno", "aluno(a)", "aluna(o)"],
@@ -31,7 +34,7 @@ EXPECTED_COLS = {
     "AVALIADOR 1": ["avaliador 1", "avaliador1", "avaliador(a) 1"],
     "AVALIADOR 2": ["avaliador 2", "avaliador2", "avaliador(a) 2"],
     "Nº do Painel": ["nº do painel", "no do painel", "n do painel", "painel", "nº painel", "nº de painel"],
-    "Subevento": ["subevento", "evento"],
+    "Subevento": ["subevento", "evento", "sub-evento", "evento/subevento"],
     "Dia": ["dia"],
     "Hora": ["hora"]
 }
@@ -60,12 +63,14 @@ def find_column(target_keys, columns):
         k = col_key(t)
         if k in colmap:
             return colmap[k]
+    # aproximação por prefixo
     for c in columns:
         if any(col_key(c).startswith(col_key(t)) for t in target_keys):
             return c
     return None
 
 def ensure_expected_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Mapeia nomes flexíveis para o padrão e garante presença/ordem."""
     if df is None or df.empty:
         return pd.DataFrame(columns=list(EXPECTED_COLS.keys()))
     df = df.copy()
@@ -87,39 +92,47 @@ def ensure_expected_columns(df: pd.DataFrame) -> pd.DataFrame:
 def tidy_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    # forward fill de campos hierárquicos (quando vieram de células mescladas)
+    # Forward-fill de campos hierárquicos (efeito de células mescladas do Word)
     ffill_cols = ["Subevento", "Áreas", "Dia", "Hora"]
     for c in ffill_cols:
-        df[c] = df[c].replace({"": pd.NA, "nan": pd.NA})
+        df[c] = df[c].replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
     df[ffill_cols] = df[ffill_cols].ffill()
 
-    # Padroniza Nº do Painel
+    # Painel sem ruído
     df["Nº do Painel"] = (
         df["Nº do Painel"]
-        .astype(str).str.replace(r"[^\dA-Za-z\-/. ]+", "", regex=True).str.strip()
+        .astype(str)
+        .str.replace(r"[^\dA-Za-z\-/. ]+", "", regex=True)
+        .str.strip()
     )
 
-    # Normaliza Subevento
+    # Normaliza Subevento (e.g., "XIV SICT", "XII SPG")
     def norm_event(x: str) -> str:
         s = strip_accents(x.upper().strip())
+        s = re.sub(r"\s+", " ", s)
         m = re.search(r"\b([IVXLCDM]+)\s+(SICT|SPG)\b", s)
         if m:
             return f"{m.group(1)} {m.group(2)}"
-        if "SICT" in s: return "SICT"
-        if "SPG" in s: return "SPG"
+        if "SICT" in s:
+            return "SICT" if not re.search(r"\bSICT\b", s) else s
+        if "SPG" in s:
+            return "SPG" if not re.search(r"\bSPG\b", s) else s
         return s
     df["Subevento"] = df["Subevento"].map(norm_event)
 
     # Final
     for c in df.columns:
         df[c] = df[c].astype(str).map(clean_cell)
-    return df.drop_duplicates()
+    df = df.drop_duplicates()
+    return df
 
 def build_mapping_by_evaluator(df: pd.DataFrame) -> dict:
+    """Dicionário {avaliador: [trabalhos]}."""
     eval_map = {}
     def push(name, row):
         name = clean_cell(name)
-        if not name: return
+        if not name:
+            return
         eval_map.setdefault(name, []).append({
             "aluno": row.get("Aluno(a)", ""),
             "titulo": row.get("Título", ""),
@@ -134,11 +147,15 @@ def build_mapping_by_evaluator(df: pd.DataFrame) -> dict:
         push(row.get("AVALIADOR 1", ""), row)
         push(row.get("AVALIADOR 2", ""), row)
     for k in eval_map:
-        eval_map[k] = sorted(eval_map[k], key=lambda r: (r["subevento"], r["dia"], r["hora"], r["painel"]))
+        eval_map[k] = sorted(
+            eval_map[k],
+            key=lambda r: (r["subevento"], r["dia"], r["hora"], r["painel"])
+        )
     return eval_map
 
 # QR robusto e compacto
 def make_qr_image(payload_obj, box_size=6, border=2, mini=False):
+    """Gera QR com JSON compacto e fallback para 'mini' (sem títulos) se necessário."""
     def to_text(obj):
         return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     def try_build(txt, err_level):
@@ -153,7 +170,7 @@ def make_qr_image(payload_obj, box_size=6, border=2, mini=False):
         return qr.make_image(fill_color="black", back_color="white").convert("RGB")
     payload = payload_obj
     if mini and "trabalhos" in payload:
-        slim = [{k:v for k,v in r.items() if k!="titulo"} for r in payload["trabalhos"]]
+        slim = [{k: v for k, v in r.items() if k != "titulo"} for r in payload["trabalhos"]]
         payload = {**payload, "trabalhos": slim}
     txt = to_text(payload)
     for lvl in [qrcode.constants.ERROR_CORRECT_Q,
@@ -168,7 +185,8 @@ def make_qr_image(payload_obj, box_size=6, border=2, mini=False):
     raise RuntimeError("QR muito grande mesmo no modo compacto.")
 
 def badge_evento(subeventos: list[str]) -> str:
-    if not subeventos: return ""
+    if not subeventos:
+        return ""
     pills = []
     for s in subeventos:
         color = "#2563EB" if "SICT" in s.upper() else "#047857" if "SPG" in s.upper() else "#374151"
@@ -191,6 +209,7 @@ if uploaded:
     xls = pd.ExcelFile(uploaded)
     df_dict = {name: pd.read_excel(xls, sheet_name=name) for name in xls.sheet_names}
 else:
+    # tenta carregar arquivos locais
     for p in [Path("SPG.xlsx"), Path("SICT.xlsx"), Path("cronograma_SICT_SPG.xlsx"), Path("cronograma.xlsx")]:
         if p.exists():
             xls = pd.ExcelFile(p)
@@ -206,13 +225,18 @@ raw_df = df_dict[sheet_name]
 df = tidy_dataframe(ensure_expected_columns(raw_df))
 
 # =========================
-# Roteamento simples via query params
+# Query params (roteamento simples)
 # =========================
 qp = st.query_params
-acao = qp.get("acao", [""])[0] if isinstance(qp.get("acao"), list) else qp.get("acao", "")
-qp_sheet = qp.get("sheet", [""])[0] if isinstance(qp.get("sheet"), list) else qp.get("sheet", "")
-qp_avaliador = qp.get("avaliador", [""])[0] if isinstance(qp.get("avaliador"), list) else qp.get("avaliador", "")
-qp_row = qp.get("row", [""])[0] if isinstance(qp.get("row"), list) else qp.get("row", "")
+def _qp_get(key, default=""):
+    val = qp.get(key, default)
+    if isinstance(val, list):
+        return val[0] if val else default
+    return val
+acao = _qp_get("acao", "")
+qp_sheet = _qp_get("sheet", "")
+qp_avaliador = _qp_get("avaliador", "")
+qp_row = _qp_get("row", "")
 
 # =========================
 # Mapa por avaliador + UI principal
@@ -223,26 +247,26 @@ all_evals = sorted(eval_map.keys())
 st.subheader(f"🎯 Trabalhos por Avaliador — Aba: **{sheet_name}**")
 c1, c2, c3 = st.columns([2,1,1])
 with c1:
-    selected_eval = st.selectbox("Avaliador(a)", [""] + all_evals, index=(all_evals.index(qp_avaliador)+1 if qp_avaliador in all_evals else 0))
+    selected_eval = st.selectbox("Avaliador(a)", [""] + all_evals,
+                                 index=(all_evals.index(qp_avaliador)+1 if qp_avaliador in all_evals else 0))
 with c2:
     mini_mode = st.checkbox("QR mini (sem título)", value=False)
 with c3:
-    show_ids = st.checkbox("Mostrar ID interno da linha", value=False, help="Útil para auditoria do link 'Avaliar'.")
+    show_ids = st.checkbox("Mostrar ID interno da linha", value=False,
+                           help="Útil para auditoria do link 'Avaliar'.")
 
 if selected_eval:
-    # tabela de trabalhos do avaliador
+    # Tabela de trabalhos do avaliador
     df_show = pd.DataFrame(eval_map[selected_eval])
-    # acrescenta Orientador, se precisar (já incluímos no map)
     df_show_ren = df_show.rename(columns={
         "aluno": "Aluno(a)", "titulo": "Título", "orientador": "Orientador(a)",
         "area": "Área", "painel": "Nº do Painel", "subevento": "Subevento",
         "dia": "Dia", "hora": "Hora"
     })
-    # adiciona índice (para "row")
     df_show_ren.reset_index(inplace=True)
     df_show_ren.rename(columns={"index": "ID"}, inplace=True)
 
-    # cria col. Avaliar (link interno)
+    # Link interno "Avaliar"
     links = []
     for _, r in df_show_ren.iterrows():
         link = make_internal_link({
@@ -254,12 +278,10 @@ if selected_eval:
         links.append(link)
     df_show_ren["Avaliar"] = links
 
-    # colunas finais
     cols_final = ["Aluno(a)", "Título", "Orientador(a)", "Nº do Painel", "Área", "Subevento", "Dia", "Hora", "Avaliar"]
     if show_ids:
         cols_final = ["ID"] + cols_final
 
-    # exibição com link clicável
     st.data_editor(
         df_show_ren[cols_final],
         use_container_width=True,
@@ -269,32 +291,41 @@ if selected_eval:
         }
     )
 
-    # QR do avaliador
-    payload = {"avaliador": selected_eval, "quantidade_trabalhos": len(eval_map[selected_eval]), "trabalhos": eval_map[selected_eval]}
+    # QR do avaliador (compacto)
+    payload = {
+        "avaliador": selected_eval,
+        "quantidade_trabalhos": len(eval_map[selected_eval]),
+        "trabalhos": eval_map[selected_eval]
+    }
     img = make_qr_image(payload, box_size=6, border=2, mini=mini_mode)
     st.image(img, caption=f"QR — {selected_eval}")
     buf = io.BytesIO(); img.save(buf, format="PNG")
     st.download_button("⬇️ Baixar QR", buf.getvalue(), f"QR_{selected_eval}.png", "image/png")
 
-    # ZIP (todos)
+    # ZIP (todos, em modo mini)
     if st.checkbox("Gerar ZIP com todos os QRs (mini)"):
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in all_evals:
-                payload_n = {"avaliador": name, "quantidade_trabalhos": len(eval_map[name]), "trabalhos": eval_map[name]}
+                payload_n = {
+                    "avaliador": name,
+                    "quantidade_trabalhos": len(eval_map[name]),
+                    "trabalhos": eval_map[name]
+                }
                 img_n = make_qr_image(payload_n, box_size=6, border=2, mini=True)
                 b = io.BytesIO(); img_n.save(b, format="PNG")
                 zf.writestr(f"QR_{name}.png", b.getvalue())
-        st.download_button("⬇️ Baixar ZIP (mini)", zip_buffer.getvalue(), f"QRs_{sheet_name}.zip", "application/zip")
+        st.download_button("⬇️ Baixar ZIP (mini)", zip_buffer.getvalue(),
+                           f"QRs_{sheet_name}.zip", "application/zip")
 
 st.divider()
 
 # =========================
-# FORMULÁRIO INTERNO (rota ?acao=avaliar)
+# FORMULÁRIO INTERNO (?acao=avaliar)
 # =========================
 if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
     st.subheader("📝 Formulário de Avaliação (interno)")
-    # recupera a linha do avaliador selecionado
+
     if qp_avaliador in eval_map:
         works = eval_map[qp_avaliador]
         try:
@@ -303,9 +334,11 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
         except Exception:
             st.error("Não foi possível localizar o trabalho. Volte e clique novamente em 'Avaliar'.")
             work = None
+
         if work:
+            # --- FORM (apenas campos + submit; sem download_button aqui dentro) ---
             with st.form(key=f"form_{qp_avaliador}_{idx}"):
-                c1, c2 = st.columns([2,2])
+                c1, c2 = st.columns([2, 2])
                 with c1:
                     st.text_input("Título", value=work["titulo"], disabled=True)
                     st.text_input("Autor(a)", value=work["aluno"], disabled=True)
@@ -324,20 +357,10 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                 g4 = st.slider("4) Relevância / Originalidade", 1, 5, 3)
                 g5 = st.slider("5) Apresentação / Defesa", 1, 5, 3)
                 obs = st.text_area("Observações (opcional)", "")
-                
-                # Renderiza o botão de download FORA do form
-                if st.session_state.get("avaliacoes_ready") and st.session_state.get("avaliacoes_xlsx_bytes"):
-                    st.download_button(
-                        "⬇️ Baixar avaliações (Excel)",
-                        data=st.session_state["avaliacoes_xlsx_bytes"],
-                        file_name="avaliacoes.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="download_avaliacoes_outside_form"
-                    )
-                    
+
                 submitted = st.form_submit_button("Salvar avaliação")
                 if submitted:
-                    # monta registro para salvar
+                    # 1) Registro
                     record = {
                         "Sheet": sheet_name,
                         "Avaliador": qp_avaliador,
@@ -355,36 +378,41 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                         "Apresentacao_defesa": g5,
                         "Observacoes": obs
                     }
-                    st.success("✅ Avaliação salva em 'avaliacoes.xlsx' (aba 'Respostas').")
 
-                    # PREPARA bytes para download e guarda na sessão
-                    buf_x = io.BytesIO()
-                    with pd.ExcelWriter(buf_x, engine="xlsxwriter") as writer:
-                        df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
-                    buf_x.seek(0)
-                    st.session_state["avaliacoes_xlsx_bytes"] = buf_x.getvalue()
-                
-                    # Sinaliza que temos novo arquivo disponível para download
-                    st.session_state["avaliacoes_ready"] = True
-                    
-                    # salva (append) em avaliacoes.xlsx
+                    # 2) Lê existentes (se houver)
+                    df_old = pd.DataFrame()
                     if EVAL_FILE.exists():
                         try:
                             df_old = pd.read_excel(EVAL_FILE, sheet_name=EVAL_SHEET)
+                            if not isinstance(df_old, pd.DataFrame):
+                                df_old = pd.DataFrame()
                         except Exception:
                             df_old = pd.DataFrame()
-                        df_new = pd.concat([df_old, pd.DataFrame([record])], ignore_index=True)
-                    else:
-                        df_new = pd.DataFrame([record])
 
+                    # 3) Concatena e salva em DISCO (permanente)
+                    df_new = pd.concat([df_old, pd.DataFrame([record])], ignore_index=True)
                     with pd.ExcelWriter(EVAL_FILE, engine="openpyxl") as writer:
                         df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
 
                     st.success("✅ Avaliação salva em 'avaliacoes.xlsx' (aba 'Respostas').")
-                    # botão para baixar a planilha
+
+                    # 4) Prepara BYTES para download (guardar na sessão)
                     buf_x = io.BytesIO()
-                    with pd.ExcelWriter(buf_x, engine="openpyxl") as writer:
+                    # Use 'xlsxwriter' se instalado; se preferir, pode trocar para 'openpyxl'
+                    with pd.ExcelWriter(buf_x, engine="xlsxwriter") as writer:
                         df_new.to_excel(writer, index=False, sheet_name=EVAL_SHEET)
-                    #st.download_button("⬇️ Baixar avaliações (Excel)", buf_x.getvalue(), "avaliacoes.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    buf_x.seek(0)
+                    st.session_state["avaliacoes_xlsx_bytes"] = buf_x.getvalue()
+                    st.session_state["avaliacoes_ready"] = True
+
+            # --- FORA do form: botão de download ---
+            if st.session_state.get("avaliacoes_ready") and st.session_state.get("avaliacoes_xlsx_bytes"):
+                st.download_button(
+                    "⬇️ Baixar avaliações (Excel)",
+                    data=st.session_state["avaliacoes_xlsx_bytes"],
+                    file_name="avaliacoes.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_avaliacoes_outside_form"
+                )
     else:
         st.error("Avaliador não encontrado nos dados atuais.")
