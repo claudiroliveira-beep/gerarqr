@@ -248,6 +248,45 @@ def is_operator(pin_input: str) -> bool:
         conf = "0000"
     return str(pin_input).strip() == str(conf).strip()
 
+
+# Quais colunas compõem a nota
+CRITERIA_COLS = [
+    "clareza_objetivos",
+    "metodologia",
+    "qualidade_resultados",
+    "relevancia_originalidade",
+    "apresentacao_defesa",
+]
+
+def with_total(df: pd.DataFrame) -> pd.DataFrame:
+    """Adiciona coluna 'nota_total' = soma dos 5 critérios (1 casa)."""
+    if df.empty:
+        return df.copy()
+    dff = df.copy()
+    dff["nota_total"] = dff[CRITERIA_COLS].sum(axis=1).round(1)
+    return dff
+
+def aggregate_by_work(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Agrega por trabalho (painel/dia/hora/subevento e identificadores).
+    Média entre avaliadores (se só 1, é a própria nota).
+    """
+    if df.empty:
+        return df.copy()
+
+    keys = ["sheet","painel","dia","hora","subevento","titulo","aluno","orientador"]
+    dff = with_total(df)
+    g = dff.groupby(keys, dropna=False)
+
+    out = g.agg(
+        avaliadores=("avaliador", "nunique"),
+        media_total=("nota_total", "mean"),
+    ).reset_index()
+
+    out["media_total"] = out["media_total"].round(1)
+    return out
+
+
 # =========================
 # QR helpers (compactação/encoding)
 # =========================
@@ -583,12 +622,119 @@ if st.session_state['operator_mode']:
         if hora_sel != "(Todos)":
             dff = dff[dff["hora"] == hora_sel]
 
-        # Métricas
+        #dff já é o df_evals filtrado
+        dff = with_total(dff)
+        
+        # Métricas (inclui média geral e quantos trabalhos têm 2 avaliadores)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total de avaliações", len(dff))
         m2.metric("Avaliadores únicos", dff["avaliador"].nunique())
         m3.metric("Trabalhos únicos", dff[["painel","dia","hora","subevento"]].drop_duplicates().shape[0])
         m4.metric("Última atualização (UTC)", dff["created_at"].max() if not dff.empty else "—")
+        
+        tab_resp, tab_media = st.tabs(["Respostas", "Médias por trabalho"])
+        
+        with tab_resp:
+            st.dataframe(
+                dff[[
+                    "created_at","sheet","avaliador","aluno","orientador","titulo",
+                    "painel","subevento","dia","hora",
+                    "clareza_objetivos","metodologia","qualidade_resultados","relevancia_originalidade","apresentacao_defesa",
+                    "nota_total","observacoes","id"
+                ]].rename(columns={
+                    "created_at":"Quando(UTC)","sheet":"Aba","avaliador":"Avaliador",
+                    "aluno":"Aluno(a)","orientador":"Orientador(a)","titulo":"Título",
+                    "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
+                    "clareza_objetivos":"Clareza","metodologia":"Metodologia","qualidade_resultados":"Resultados",
+                    "relevancia_originalidade":"Relevância","apresentacao_defesa":"Apresentação",
+                    "nota_total":"Nota total","observacoes":"Observações","id":"ID"
+                }),
+                use_container_width=True,
+                height=420
+            )
+        
+            c1, c2 = st.columns([1,1])
+            with c1:
+                if st.button("Gerar Excel (Respostas)", key="gen_excel_respostas"):
+                    st.session_state["op_excel_bytes_resp"] = export_evals_to_excel_bytes(dff)
+                    st.session_state["op_excel_ready_resp"] = True
+            with c2:
+                if st.button("Gerar CSV (Respostas)", key="gen_csv_respostas"):
+                    st.session_state["op_csv_bytes_resp"] = export_evals_to_csv_bytes(dff)
+                    st.session_state["op_csv_ready_resp"] = True
+        
+            d1, d2 = st.columns([1,1])
+            with d1:
+                if st.session_state.get("op_excel_ready_resp") and st.session_state.get("op_excel_bytes_resp"):
+                    st.download_button(
+                        "⬇️ Baixar Excel (Respostas)",
+                        data=st.session_state["op_excel_bytes_resp"],
+                        file_name="avaliacoes_respostas.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_excel_respostas"
+                    )
+            with d2:
+                if st.session_state.get("op_csv_ready_resp") and st.session_state.get("op_csv_bytes_resp"):
+                    st.download_button(
+                        "⬇️ Baixar CSV (Respostas)",
+                        data=st.session_state["op_csv_bytes_resp"],
+                        file_name="avaliacoes_respostas.csv",
+                        mime="text/csv",
+                        key="dl_csv_respostas"
+                    )
+        
+        with tab_media:
+            agg = aggregate_by_work(dff)
+        
+            # Métricas específicas de médias
+            mm1, mm2 = st.columns(2)
+            mm1.metric("Trabalhos com ≥ 2 avaliadores", int((agg["avaliadores"] >= 2).sum()))
+            mm2.metric("Média geral (todos os trabalhos)", agg["media_total"].mean().round(2) if not agg.empty else "—")
+        
+            st.dataframe(
+                agg[[
+                    "sheet","titulo","aluno","orientador",
+                    "painel","subevento","dia","hora",
+                    "avaliadores","media_total"
+                ]].rename(columns={
+                    "sheet":"Aba","titulo":"Título","aluno":"Aluno(a)","orientador":"Orientador(a)",
+                    "painel":"Nº Painel","subevento":"Subevento","dia":"Dia","hora":"Hora",
+                    "avaliadores":"# Avaliadores","media_total":"Média final"
+                }),
+                use_container_width=True,
+                height=420
+            )
+        
+            c3, c4 = st.columns([1,1])
+            with c3:
+                if st.button("Gerar Excel (Médias)", key="gen_excel_medias"):
+                    st.session_state["op_excel_bytes_medias"] = export_evals_to_excel_bytes(agg)
+                    st.session_state["op_excel_ready_medias"] = True
+            with c4:
+                if st.button("Gerar CSV (Médias)", key="gen_csv_medias"):
+                    st.session_state["op_csv_bytes_medias"] = export_evals_to_csv_bytes(agg)
+                    st.session_state["op_csv_ready_medias"] = True
+        
+            d3, d4 = st.columns([1,1])
+            with d3:
+                if st.session_state.get("op_excel_ready_medias") and st.session_state.get("op_excel_bytes_medias"):
+                    st.download_button(
+                        "⬇️ Baixar Excel (Médias)",
+                        data=st.session_state["op_excel_bytes_medias"],
+                        file_name="avaliacoes_medias.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_excel_medias"
+                    )
+            with d4:
+                if st.session_state.get("op_csv_ready_medias") and st.session_state.get("op_csv_bytes_medias"):
+                    st.download_button(
+                        "⬇️ Baixar CSV (Médias)",
+                        data=st.session_state["op_csv_bytes_medias"],
+                        file_name="avaliacoes_medias.csv",
+                        mime="text/csv",
+                        key="dl_csv_medias"
+                    )
+
 
         # Tabela principal
         st.dataframe(
