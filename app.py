@@ -196,11 +196,11 @@ def save_evaluation_sqlite(record: dict) -> tuple[bool, str]:
         record.get("Subevento", ""),
         record.get("Dia", ""),
         record.get("Hora", ""),
-        int(record.get("Clareza_objetivos", 0)),
-        int(record.get("Metodologia", 0)),
-        int(record.get("Qualidade_resultados", 0)),
-        int(record.get("Relevancia_originalidade", 0)),
-        int(record.get("Apresentacao_defesa", 0)),
+        int(record.get("Clareza_objetivos", 0.0)),
+        int(record.get("Metodologia", 0.0)),
+        int(record.get("Qualidade_resultados", 0.0)),
+        int(record.get("Relevancia_originalidade", 0.0)),
+        int(record.get("Apresentacao_defesa", 0.0)),
         record.get("Observacoes", "")
     )
     with sqlite3.connect(EVAL_DB) as conn:
@@ -475,15 +475,43 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                     st.text_input("Dia", value=work["dia"], disabled=True)
                     st.text_input("Hora", value=work["hora"], disabled=True)
 
-                st.markdown("**Avaliação (1 = insuficiente … 5 = excelente)**")
-                g1 = st.slider("1) Clareza dos objetivos", 1, 5, 3)
-                g2 = st.slider("2) Metodologia adequada", 1, 5, 3)
-                g3 = st.slider("3) Qualidade dos resultados", 1, 5, 3)
-                g4 = st.slider("4) Relevância / Originalidade", 1, 5, 3)
-                g5 = st.slider("5) Apresentação / Defesa", 1, 5, 3)
+                st.markdown("**Avaliação — total máximo 10 pontos (cada item 0.0 a 10.0 em passos de 0.1)**")
+                
+                # Controles numéricos com passo 0.1
+                g1 = st.number_input(
+                    "1) A formatação do pôster está de fácil leitura e houve a inclusão de ferramentas adequadas para exposição do tema?",
+                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                )
+                g2 = st.number_input(
+                    "2) A organização do material apresentado segue uma ordem de fácil compreensão?",
+                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                )
+                g3 = st.number_input(
+                    "3) O(a) bolsista/voluntário(a) respondeu às perguntas da banca adequadamente?",
+                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                )
+                g4 = st.number_input(
+                    "4) O(a) bolsista/voluntário(a) apresentou domínio do tema?",
+                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                )
+                g5 = st.number_input(
+                    "5) Qualidade dos resultados",
+                    min_value=0.0, max_value=10.0, value=0.0, step=0.1, format="%.1f"
+                )
+                
                 obs = st.text_area("Observações (opcional)", "")
+                
+                # Cálculo e validação do total
+                total = round(g1 + g2 + g3 + g4 + g5, 1)
+                st.info(f"**Total atual:** {total:.1f} / 10.0")
+                
+                # Se exceder 10, bloqueia o envio e mostra erro
+                excede = total > 10.0
+                if excede:
+                    st.error("A soma dos itens ultrapassa 10. Ajuste as notas antes de salvar.")
+                
+                submitted = st.form_submit_button("Salvar avaliação", disabled=excede)
 
-                submitted = st.form_submit_button("Salvar avaliação")
                 if submitted:
                     record = {
                         "Sheet": sheet_name,
@@ -495,19 +523,20 @@ if acao == "avaliar" and qp_sheet == sheet_name and qp_avaliador:
                         "Subevento": work["subevento"],
                         "Dia": work["dia"],
                         "Hora": work["hora"],
-                        "Clareza_objetivos": g1,
-                        "Metodologia": g2,
-                        "Qualidade_resultados": g3,
-                        "Relevancia_originalidade": g4,
-                        "Apresentacao_defesa": g5,
+                        "Clareza_objetivos": float(g1),
+                        "Metodologia": float(g2),
+                        "Qualidade_resultados": float(g3),
+                        "Relevancia_originalidade": float(g4),
+                        "Apresentacao_defesa": float(g5),
                         "Observacoes": obs
                     }
-
+                
                     ok, msg = save_evaluation_sqlite(record)
                     if ok:
-                        st.success("✅ " + msg)
+                        st.success(f"✅ {msg} (Total: {total:.1f}/10)")
                     else:
                         st.warning("⚠️ " + msg)
+                
 
 # =========================
 # ÁREA DO OPERADOR (PIN) — Filtros, Tabela, Exportação
